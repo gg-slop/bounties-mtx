@@ -1,7 +1,7 @@
 name: claim
 on:
   pull_request:
-    paths: ["submissions/*/*.jsonl"]
+    paths: ["*/submissions/*.jsonl.b64"]
 permissions:
   contents: write
   pull-requests: read
@@ -21,19 +21,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # The room (and so the bounty and base DAG) comes from the path:
-          # submissions/<ROOM>/<name>.jsonl, optionally pinned by manifest.json.
+          # <ROOM>/submissions/<name>.jsonl.b64, optionally pinned by manifest.json.
           gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
             --paginate --jq '.[] | select(.status != "removed") | .filename
-              | select(test("^submissions/[A-Za-z0-9_-]{43}/[^/]+\\.jsonl$"))' \
+              | select(test("^[A-Za-z0-9_-]{43}/submissions/[^/]+\\.jsonl\\.b64$"))' \
             > "$RUNNER_TEMP/submitted.txt"
-          while read -r s; do python3 -I tools/bounty.py build "$s"; done \
+          while read -r s; do python3 -I scripts/bounty.py build "$s"; done \
             < "$RUNNER_TEMP/submitted.txt"
       - uses: actions/upload-artifact@v4 # raw submissions kept briefly for reviewers
-        with: { name: raw-submission, path: submissions/, retention-days: 14 }
+        with: { name: raw-submission, path: "*/submissions/", retention-days: 14 }
       - name: Replace submissions with deltas (same-repo PRs only)
         if: github.event.pull_request.head.repo.full_name == github.repository
         run: |
           xargs -r git rm -q < "$RUNNER_TEMP/submitted.txt"
-          git add deltas
+          git add -- '*/deltas'
           git -c user.name=claim-bot -c user.email=bot@invalid commit -qm "Replace submission with delta"
           git push

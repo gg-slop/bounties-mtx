@@ -13,7 +13,7 @@ git submodule update --init --recursive
 python3 ./scripts/bounty.py decode
 # ~~~~
 # you need rezzy for this, otherwise use your own tools/scripts
-cd res/
+cd res/L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI/
 # run state res on the current DAG
 rezzy --debug -i merged-L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI-v12-d1-71756.jsonl
 # print missing event IDs

@@ -2,7 +2,7 @@ name: bounty-merge
 on:
   push:
     branches: [main]
-    paths: ["deltas/*/*.claim.json"]
+    paths: ["*/deltas/*.claim.json"]
 concurrency: bounty-ledger # serialize ledger writes
 permissions:
   contents: write
@@ -23,11 +23,11 @@ jobs:
           # Room and base DAG come from the claim's path and its recorded base.
           PR=$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/pulls --jq '.[0].number')
           WHO=$(gh pr view "$PR" --json author --jq .author.login)
-          for c in $(git diff --name-only --diff-filter=A HEAD~1 -- 'deltas/*/*.claim.json'); do
-            python3 -I tools/bounty.py merge "$c" --pr "$PR" --claimant "$WHO"
+          for c in $(git diff --name-only --diff-filter=A HEAD~1 -- '*/deltas/*.claim.json'); do
+            python3 -I scripts/bounty.py merge "$c" --pr "$PR" --claimant "$WHO"
           done
       - run: |
-          git add bounty/*/ledger.jsonl
+          git add -- '*/ledger.jsonl'
           git diff --cached --quiet || {
             git -c user.name=claim-bot -c user.email=bot@invalid commit -qm "ledger"
             git push

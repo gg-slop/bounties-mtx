@@ -8,7 +8,7 @@ Later simplified to 20K over 1820 incomplete heads at total depth 71756.
 
 Payouts follow a mild power-law weighting (rank^-0.25) over 2163 missing prevs,
 about 47 sats for the hardest-looking down to 7 sats (roughly 7:1). Targets are
-ranked by fewest references, then newest; see `bounty/<ROOM>/targets.json` for
+ranked by fewest references, then newest; see `<ROOM>/targets.json` for
 every target's rank and prize. A target is paid once, to the first merged claim
 that closes it.
 

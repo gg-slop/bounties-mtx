@@ -1,6 +1,6 @@
-# TODO: temporary
-res/
-
 # TODO: python ignores
 
 __pycache__/
+
+# plaintext DAG/submission data must never be committed; only .jsonl.b64
+*.jsonl
