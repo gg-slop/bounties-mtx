@@ -1,0 +1,6 @@
+# TODO: temporary
+res/
+
+# TODO: python ignores
+
+__pycache__/

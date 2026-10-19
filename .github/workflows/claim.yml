@@ -1,0 +1,39 @@
+name: claim
+on:
+  pull_request:
+    paths: ["submissions/*/*.jsonl"]
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  build-delta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+      - uses: actions/checkout@v4 # base DAGs live in the data repo
+        with: { repository: gamesguru/bounties-mtx-res, path: res }
+      - run: pip install orjson==3.11.3
+      - name: Build a delta for each submission this PR touches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The room (and so the bounty and base DAG) comes from the path:
+          # submissions/<ROOM>/<name>.jsonl, optionally pinned by manifest.json.
+          gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
+            --paginate --jq '.[] | select(.status != "removed") | .filename
+              | select(test("^submissions/[A-Za-z0-9_-]{43}/[^/]+\\.jsonl$"))' \
+            > "$RUNNER_TEMP/submitted.txt"
+          while read -r s; do python3 -I tools/bounty.py build "$s"; done \
+            < "$RUNNER_TEMP/submitted.txt"
+      - uses: actions/upload-artifact@v4 # raw submissions kept briefly for reviewers
+        with: { name: raw-submission, path: submissions/, retention-days: 14 }
+      - name: Replace submissions with deltas (same-repo PRs only)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          xargs -r git rm -q < "$RUNNER_TEMP/submitted.txt"
+          git add deltas
+          git -c user.name=claim-bot -c user.email=bot@invalid commit -qm "Replace submission with delta"
+          git push
