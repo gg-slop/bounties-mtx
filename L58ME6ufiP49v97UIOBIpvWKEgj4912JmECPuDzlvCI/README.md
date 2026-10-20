@@ -6,6 +6,12 @@ The published 20,000-sat table covers 2,163 unique missing event IDs. The rezzy
 warning's 1,820 count is the number of local events that reference missing IDs;
 multiple events can point to the same ID, and auth links add targets as well.
 
+These 2,163 are the initial targets; fetching them can reveal more missing
+ancestors. To claim one you must close its whole chain: every
+`prev_events`/`auth_events` link of the target and of each ancestor,
+recursively, until it reaches the base. Ancestors you find along the way are not
+separate targets and are not paid separately.
+
 ## Terms
 
 Payouts follow a mild power-law weighting (rank^-0.25) over 2,163 missing event

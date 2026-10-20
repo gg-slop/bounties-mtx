@@ -8,6 +8,13 @@
 contribute additional targets. The fixed table was generated with
 `scripts/bounty.py targets L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI`.
 
+The 2,163 targets are the _initial_ missing IDs, not the whole of the missing
+history. Fetching a target event usually reveals further
+`prev_events`/`auth_events` that are also missing (newly revealed ancestor
+gaps), and those can reveal more. None of those deeper ancestors is a target of
+its own and none is paid separately; they are the work needed to close the
+target that leads to them.
+
 ## Claiming
 
 1. Encode your events as per-line base64 and put the file in
@@ -37,6 +44,12 @@ later claim can complete an earlier partial trace by supplying a missing
 ancestor; the award goes to the claim that first makes the full trace
 resolvable. Partial traces earn nothing until closure. One claim can close many
 targets.
+
+Closure is recursive: you must follow every link of the target, of its
+ancestors, and so on, until each chain reaches an event already in the base. A
+target whose event you hold, but whose ancestors are not all resolved, is still
+open. Shared ancestors count once and can be supplied by any claim, but the
+prize goes only to the claim that completes the target.
 
 ## Payout
 

@@ -33,7 +33,9 @@ A target is a deduplicated prev_events/auth_events ID referenced by BASE but
 absent from it. Event IDs are room-v12 reference hashes. Submitted content is
 kept only when its Matrix content hash validates; otherwise it is redacted.
 A target is *closed* when it and every prev_events/auth_events link of its
-ancestors resolve into the accumulated event pool.
+ancestors resolve into the accumulated event pool. Targets are only the initial
+missing IDs: closing one means following every link, recursively,
+down to events in BASE; the ancestors found on the way are not targets.
 """
 
 import argparse
