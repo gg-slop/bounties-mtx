@@ -17,11 +17,9 @@ repos:
       - id: mixed-line-ending
       - id: check-merge-conflict
       - id: check-added-large-files
+        exclude: '^[A-Za-z0-9_-]{43}/submissions/.*\.jsonl\.b64$'
 
   - repo: https://github.com/crate-ci/typos
     rev: v1.45.2
     hooks:
       - id: typos
-      - id: typos
-        name: commit-msg-typos
-        stages: [commit-msg]

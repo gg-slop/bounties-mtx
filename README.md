@@ -2,9 +2,11 @@
 
 ## Bootstrapping
 
-To set up this repo, probe the "merged" or aggregate DAG so far in question, run
-the following steps. Always encode your submission in `.jsonl.b64` format. See
-the PR template markdown file for details on how.
+This repository collects Matrix event DAGs and bounty claims. To inspect a
+room's current DAG, follow the setup steps below. Encode claim submissions as
+`.jsonl.b64` files, and follow
+[the pull request template](.github/pull_request_template.md) when opening a
+claim PR.
 
 ```shell
 git clone https://github.com/gamesguru/bounties-mtx.git

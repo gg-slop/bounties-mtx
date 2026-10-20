@@ -3,6 +3,8 @@
 
 import argparse
 import base64
+import os
+import tempfile
 
 
 def main():
@@ -17,15 +19,24 @@ def main():
     else:
         src, dst = args.path + ".b64", args.path
 
-    with open(src, "rb") as fin, open(dst, "wb") as fout:
-        for line in fin:  # Bytes split on LF only, never on U+2028, etc.
-            line = line.rstrip(b"\n")
-            if not line:
-                continue
-            if args.mode == "encode":
-                fout.write(base64.b64encode(line) + b"\n")
-            else:
-                fout.write(base64.b64decode(line, validate=True) + b"\n")
+    parent = os.path.dirname(os.path.abspath(dst))
+    fd, temp = tempfile.mkstemp(prefix=".jsonl-base64-", dir=parent)
+    try:
+        with os.fdopen(fd, "wb") as fout:
+            with open(src, "rb") as fin:
+                for line in fin:  # Bytes split on LF only, never on U+2028, etc.
+                    line = line.rstrip(b"\n")
+                    if not line:
+                        continue
+                    if args.mode == "encode":
+                        fout.write(base64.b64encode(line) + b"\n")
+                    else:
+                        fout.write(base64.b64decode(line, validate=True) + b"\n")
+        os.replace(temp, dst)
+    except BaseException:
+        if os.path.exists(temp):
+            os.unlink(temp)
+        raise
 
     print(f"{args.mode}d {src} -> {dst}")
 

@@ -11,18 +11,18 @@ MAKEFLAGS += --no-print-directory
 .PHONY: format
 format:	##H Format code
 	prettier --prose-wrap always --print-width 80 --write $$(git ls-files '*.md' '*.y*ml')
-	pre-commit run --all-files
 	black $$(git ls-files '*.py')
 	isort $$(git ls-files '*.py')
 	ruff format $$(git ls-files '*.py')
 	ruff check --fix $$(git ls-files '*.py')
+	pre-commit run --all-files
 
 
 .PHONY: lint
 lint:	##H Run python lints
 	ruff check $$(git ls-files '*.py')
 	mypy $$(git ls-files '*.py')
-	flake8 $$(git ls-files '*.py')
+	flake8 --max-line-length 88 $$(git ls-files '*.py')
 	pylint $$(git ls-files '*.py')
 
 
