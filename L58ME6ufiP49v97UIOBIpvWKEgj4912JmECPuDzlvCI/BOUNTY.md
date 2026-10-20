@@ -1,6 +1,6 @@
 # Backfill bounty: missing prev_events
 
-`<ROOM>/targets.json` lists every event ID that
+`<ROOM>/targets.csv` lists every event ID that
 `res/<ROOM>/merged-…-v12-d1-71756.jsonl` references (as
 `prev_events`/`auth_events`) but does not contain: **2,163 unique targets**. The
 1,820 in the rezzy warning counts local events that reference missing
@@ -42,8 +42,8 @@ targets.
 
 - Budget: 20,000 sats (≈ the original 3 × 6,500). Targets are ranked hardest-
   looking first: fewest base events referencing them, then the depth of the
-  shallowest referencing event (deeper first), then event ID. Both numbers are
-  in `targets.json`. Rank _k_ of _N_ pays `budget · k^-0.25 / Σ j^-0.25`,
+  shallowest referencing event (shallowest first), then event ID. Both numbers are
+  in `targets.csv`. Rank _k_ of _N_ pays `budget · k^-0.25 / Σ j^-0.25`,
   rounded by largest remainder so the total is exact: about 47 sats for rank 1
   down to 7 for rank 2163 (roughly 7:1). This rewards a guess at difficulty, not
   a measure of it.

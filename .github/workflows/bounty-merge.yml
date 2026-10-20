@@ -75,8 +75,8 @@ jobs:
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
               continue
             fi
-            trusted_targets="$RUNNER_TEMP/targets-$room.json"
-            if ! git show "$PUSH_BEFORE:$room/targets.json" > "$trusted_targets"; then
+            trusted_targets="$RUNNER_TEMP/targets-$room.csv"
+            if ! git show "$PUSH_BEFORE:$room/targets.csv" > "$trusted_targets"; then
               echo "$claim: no published target table before this push" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
               continue

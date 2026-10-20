@@ -15,7 +15,7 @@ Your PR should add exactly one file (per room) and nothing else:
    `python3 scripts/bounty.py decode` (writes plaintext to `res/<ROOM>/`; it is
    git-ignored).
 2. Find the missing event IDs: `rezzy inspect gaps -i res/<ROOM>/merged-….jsonl`
-   (the target list and prizes are in `<ROOM>/targets.json`).
+   (the target list and prizes are in `<ROOM>/targets.csv`).
 3. Put the events you recovered, one JSON event per line, in
    `<ROOM>/submissions/<you>.jsonl`, then encode them:
    `python3 scripts/bounty.py encode <ROOM>/submissions/<you>.jsonl`

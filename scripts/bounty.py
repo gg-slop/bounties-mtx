@@ -2,7 +2,7 @@
 # PYTHON_ARGCOMPLETE_OK
 """Backfill bounty tooling: targets, submission -> delta, ledger payouts.
 
-  bounty.py targets ROOM [--budget SATS]    -> ROOM/targets.json
+  bounty.py targets ROOM [--budget SATS]    -> ROOM/targets.csv
   bounty.py build   SUBMISSION              -> ROOM/deltas/<digest>.delta.jsonl.b64
                                                + <digest>.claim.json
   bounty.py merge   CLAIM --claimant NAME [--pr N]
@@ -35,6 +35,7 @@ ancestors resolve into the accumulated event pool.
 
 import argparse
 import base64
+import csv
 import glob
 import hashlib
 import importlib
@@ -364,9 +365,40 @@ def submission_base(path, override=None):
     return room, override or find_base(room, read_manifest(path).get("base"))
 
 
+TABLE_COLS = ("rank", "event_id", "refs", "min_child_depth", "prize_sats")
+TABLE_INTS = ("budget_sats", "count")
+
+
+def write_table(path, table):
+    """Write the target table as CSV, its metadata as leading '# key: value' lines."""
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        for key, value in table.items():
+            if key != "targets":
+                f.write(f"# {key}: {value}\n")
+        out = csv.DictWriter(f, fieldnames=TABLE_COLS, lineterminator="\n")
+        out.writeheader()
+        out.writerows(table["targets"])
+
+
+def read_table(path):
+    """Read a table written by write_table back into the original dict shape."""
+    with open(path, encoding="utf-8", newline="") as f:
+        lines = f.read().splitlines()
+    meta = {}
+    for line in lines:
+        if line.startswith("# "):
+            key, _, value = line[2:].partition(": ")
+            meta[key] = int(value) if key in TABLE_INTS else value
+    rows = [
+        {c: (r[c] if c == "event_id" else int(r[c])) for c in TABLE_COLS}
+        for r in csv.DictReader(x for x in lines if not x.startswith("#"))
+    ]
+    return {**meta, "targets": rows}
+
+
 def targets_file(room):
     """Published target table for ROOM; exits if there is no such bounty."""
-    path = f"{room}/targets.json"
+    path = f"{room}/targets.csv"
     if not os.path.exists(path):
         sys.exit(f"no published bounty for room {room}")
     return path
@@ -378,11 +410,12 @@ def links(e):
 
 
 def rank_targets(base):
-    """Missing IDs, hardest-looking first: fewest references, shallowest depth.
+    """Missing IDs, hardest-looking first: fewest references, then oldest.
 
     refs is how many base events point at the target (few means few servers
     are likely to have seen it); min_child_depth is the shallowest depth among
-    those referencing events. Both are recomputable from the base DAG.
+    those referencing events (smaller means older history). Both are
+    recomputable from the base DAG.
     """
     seen = {}
     for e in base.values():
@@ -393,7 +426,7 @@ def rank_targets(base):
         {"event_id": t, "refs": len(d), "min_child_depth": min(d.values())}
         for t, d in seen.items()
     ]
-    rows.sort(key=lambda r: (r["refs"], -r["min_child_depth"], r["event_id"]))
+    rows.sort(key=lambda r: (r["refs"], r["min_child_depth"], r["event_id"]))
     return rows
 
 
@@ -469,22 +502,22 @@ def check_published_base(room, base_name, base, table):
 
 
 def cmd_targets(args):
-    """Write ROOM/targets.json with ranks and prizes."""
+    """Write ROOM/targets.csv with ranks and prizes."""
     base_name = args.base or find_base(args.room)
     base = load(base_name)
     rows = rank_targets(base)
     p = prizes(len(rows), args.budget)
-    path = f"{args.room}/targets.json"
+    path = f"{args.room}/targets.csv"
     target_rows = [{"rank": i + 1, **r, "prize_sats": p[i]} for i, r in enumerate(rows)]
     published = {
         "budget_sats": args.budget,
         "count": len(rows),
         "weight": "rank**-0.25",
-        "order": "refs asc, min_child_depth desc, event_id asc",
+        "order": "refs asc, min_child_depth asc, event_id asc",
         "targets": target_rows,
     }
     if os.path.exists(path):
-        existing = read_json(path)
+        existing = read_table(path)
         if any(existing.get(k) != v for k, v in published.items()):
             sys.exit(f"{path} is already published; refusing to change ranks or prizes")
         fingerprint = base_fingerprint(base)
@@ -494,13 +527,13 @@ def cmd_targets(args):
             sys.exit(f"{path} is already tied to a different base DAG")
         existing["base"] = base_name
         existing["base_sha256"] = fingerprint
-        write_json(path, existing)
+        write_table(path, existing)
         print(f"published table metadata verified for {base_name}")
         return
     os.makedirs(args.room, exist_ok=True)
     published["base"] = base_name
     published["base_sha256"] = base_fingerprint(base)
-    write_json(path, published)
+    write_table(path, published)
     if p:
         print(
             f"{len(rows)} targets; first prize {p[0]} sats, last {p[-1]}; "
@@ -592,7 +625,7 @@ def cmd_build(args):
     """Validate a submission and write its delta and claim files."""
     room, base_name = submission_base(args.submission, args.base)
     base = load(base_name)
-    table = read_json(targets_file(room))
+    table = read_table(targets_file(room))
     check_published_base(room, base_name, base, table)
     out = f"{room}/deltas"
     payout = checked_payout(args.submission)
@@ -655,8 +688,8 @@ def claim_base_name(args, room, claim):
 
 def trusted_table(args, room, base_name, base):
     """The published target table, checked against the base and the claim push."""
-    table = read_json(args.trusted_targets or targets_file(room))
-    if args.trusted_targets and table != read_json(targets_file(room)):
+    table = read_table(args.trusted_targets or targets_file(room))
+    if args.trusted_targets and table != read_table(targets_file(room)):
         sys.exit(f"{targets_file(room)} changed in the claim push")
     check_published_base(room, base_name, base, table)
     return table
