@@ -1,0 +1,16 @@
+# TODO: python ignores
+__pycache__/
+
+# plaintext DAG/submission data must never be committed; only .jsonl.b64
+*.jsonl
+!*/ledger.jsonl
+
+# Local payout batch awaiting a transaction ID
+*/payout-pending.json
+
+# other ignores
+.env
+
+# federation fetch output (plaintext room data)
+fetched/
+*.log

@@ -1,0 +1,3 @@
+[files]
+# Event IDs and base64 are full of "typos"; skip the data entirely.
+extend-exclude = ["*.json", "*.csv", "*.jsonl", "*.b64", "*.log", "res/"]
