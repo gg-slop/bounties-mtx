@@ -42,8 +42,8 @@ targets.
 
 - Budget: 20,000 sats (≈ the original 3 × 6,500). Targets are ranked hardest-
   looking first: fewest base events referencing them, then the depth of the
-  shallowest referencing event (shallowest first), then event ID. Both numbers are
-  in `targets.csv`. Rank _k_ of _N_ pays `budget · k^-0.25 / Σ j^-0.25`,
+  shallowest referencing event (shallowest first), then event ID. Both numbers
+  are in `targets.csv`. Rank _k_ of _N_ pays `budget · k^-0.25 / Σ j^-0.25`,
   rounded by largest remainder so the total is exact: about 47 sats for rank 1
   down to 7 for rank 2163 (roughly 7:1). This rewards a guess at difficulty, not
   a measure of it.
@@ -59,8 +59,10 @@ targets.
   target table. `scripts/bounty.py targets ROOM` refuses to change a published
   table's ranks or prizes.
 - Payouts: claimants list a Bitcoin address as `"payout"` in their
-  `manifest.json`. `scripts/bounty.py payout <ROOM> --min 5000` sums unpaid
-  prizes per address and prints the unsigned
+  `manifest.json`. `scripts/bounty.py payout <ROOM> --min 5000` aggregates
+  unpaid prizes by address, then applies the minimum, and prints the unsigned
   `bitcoin-cli walletcreatefundedpsbt` command; add `--run` to have your own
-  node return the PSBT. Nothing is signed or broadcast by this repo. Totals
-  under `--min` carry over (on-chain outputs below ~300–550 sats are dust).
+  node return the PSBT. After broadcasting, run
+  `scripts/bounty.py paid <ROOM> <TXID>` to mark the rows in that payout paid.
+  Nothing is signed or broadcast by this repo. Address totals under `--min`
+  carry over (on-chain outputs below ~300–550 sats are dust).

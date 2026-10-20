@@ -16,7 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.sha }}
+          # Runs in this concurrency group may have queued behind a prior
+          # ledger push. Start from the current branch so reconciliation sees it.
+          ref: master
           fetch-depth: 0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -46,10 +48,31 @@ jobs:
               }
             ' > "$RUNNER_TEMP/claim-history.txt"
           : > "$RUNNER_TEMP/claim-errors.txt"
+          declare -A blocked_rooms=()
           while IFS=$'\t' read -r added_at claim; do
             [[ -f "$claim" ]] || continue
             room=${claim%%/*}
+            if [[ -n "${blocked_rooms[$room]+x}" ]]; then
+              echo "$claim: deferred because an earlier claim in $room could not be attributed" \
+                | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              continue
+            fi
             delta=${claim%.claim.json}.delta.jsonl.b64
+            claim_digest=${claim##*/}
+            claim_digest=${claim_digest%.claim.json}
+            if ! embedded_delta=$(jq -er '.delta | strings' "$claim") || \
+               ! embedded_digest=$(jq -er '.delta_sha256_16 | strings' "$claim"); then
+              echo "$claim: missing or invalid embedded delta path/digest" \
+                | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              continue
+            fi
+            expected_delta="$room/deltas/$claim_digest.delta.jsonl.b64"
+            if [[ "$embedded_delta" != "$expected_delta" || \
+                  "$embedded_digest" != "$claim_digest" ]]; then
+              echo "$claim: embedded delta path/digest does not match its sibling" \
+                | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              continue
+            fi
             prior_file="$RUNNER_TEMP/prior-$room.txt"
             prior_args=()
             if [[ -f "$prior_file" ]]; then
@@ -60,6 +83,7 @@ jobs:
             if ! prs=$(gh api "repos/$REPOSITORY/commits/$added_at/pulls"); then
               echo "$claim: could not resolve PR for $added_at" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              blocked_rooms[$room]=1
               continue
             fi
             pr=$(printf '%s' "$prs" | jq -r \
@@ -67,18 +91,21 @@ jobs:
             if [[ -z "$pr" ]]; then
               echo "$claim: no associated master PR for addition commit $added_at" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              blocked_rooms[$room]=1
               continue
             fi
             if ! who=$(gh pr view "$pr" --repo "$REPOSITORY" \
               --json author --jq .author.login); then
               echo "$claim: could not resolve claimant for PR #$pr" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              blocked_rooms[$room]=1
               continue
             fi
             trusted_targets="$RUNNER_TEMP/targets-$room.csv"
             if ! git show "$PUSH_BEFORE:$room/targets.csv" > "$trusted_targets"; then
               echo "$claim: no published target table before this push" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              blocked_rooms[$room]=1
               continue
             fi
             if python3 -I scripts/bounty.py merge "$claim" --pr "$pr" \

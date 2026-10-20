@@ -7,7 +7,8 @@ Room ID: `<ROOM>` (the 43-character folder name, e.g.
 
 ## How a claim works
 
-Your PR should add exactly one file (per room) and nothing else:
+For each room, your PR should add exactly one submission file, plus that room's
+`submissions/manifest.json` with your payout address:
 
     <ROOM>/submissions/<you>.00.jsonl.b64
 
@@ -21,9 +22,9 @@ Your PR should add exactly one file (per room) and nothing else:
    `python3 scripts/bounty.py encode <ROOM>/submissions/<you>.jsonl`
 4. Commit **only** the resulting `.00.jsonl.b64`. Never commit plaintext
    `.jsonl` (it is git-ignored). Base64 is an encoding, not privacy.
-5. The published target table fixes the base DAG. An optional
-   `<ROOM>/submissions/manifest.json` may repeat that exact basename as
-   `{"base": "merged-<ROOM>-…"}`; claims against another base are rejected.
+5. The published target table fixes the base DAG. The manifest may also pin that
+   exact basename as `{"base": "merged-<ROOM>-…"}`; claims against another base
+   are rejected.
 
 CI then verifies each event's reference ID and content hash, redacting content
 when the content hash does not validate. It builds
@@ -44,8 +45,8 @@ they clear it. No address, no payout.
 
 ## Checklist
 
-- [ ] Only `<ROOM>/submissions/*.jsonl.b64` (and optionally `manifest.json`)
-      changed
+- [ ] Only `<ROOM>/submissions/<you>.00.jsonl.b64` and
+      `<ROOM>/submissions/manifest.json` changed
 - [ ] No plaintext `.jsonl` committed
 - [ ] `manifest.json` has a `payout` address
 - [ ] Events are for this room only; anything unresolvable has evidence attached

@@ -11,9 +11,10 @@ multiple events can point to the same ID, and auth links add targets as well.
 Payouts follow a mild power-law weighting (rank^-0.25) over 2,163 missing event
 IDs, about 47 sats for the hardest-looking down to 7 sats (roughly 7:1). Targets
 are ranked by fewest referencing events, then by the depth of the shallowest
-referencing event (shallowest, i.e. oldest, first), then event ID. See `<ROOM>/targets.csv` for
-every target's rank and prize. A target is awarded once, to the claim that first
-makes its full trace resolvable in the accumulated event pool.
+referencing event (shallowest, i.e. oldest, first), then event ID. See
+`<ROOM>/targets.csv` for every target's rank and prize. A target is awarded
+once, to the first merged claim that makes its full trace resolvable in the
+accumulated event pool.
 
 If an edge cannot be resolved or followed (i.e., it's an event from another
 room), you must prove or provide some evidence supporting this.

@@ -125,7 +125,7 @@ jobs:
         run: |
           while IFS= read -r s; do git rm -q -- "$s"; done \
             < "$RUNNER_TEMP/submitted.txt"
-          git add -- '*/deltas'
+          git add -- '*/deltas/*'
           if ! git diff --cached --quiet; then
             git -c user.name=claim-bot -c user.email=bot@invalid \
               commit -qm "Replace submission with delta"

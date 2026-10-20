@@ -10,14 +10,16 @@
                                                ROOM/ledger.jsonl
   bounty.py payout  ROOM [--min SATS] [--fee-rate N] [--change ADDR] [--run]
                                             -> prints the unsigned payout txn
+  bounty.py paid    ROOM TXID              -> records a completed payout
   bounty.py encode [FILE...] [--lines N]  -> stem.NN.jsonl.b64 (50K lines each)
   bounty.py decode [FILE...]              -> stem.NN.jsonl.b64 back into FILE
                                     (default files: from res/*/*.jsonl.b64)
 
 ROOM is the 43-char room ID. The bounty a claim targets comes from where it
 lives: ROOM/submissions/x.jsonl.b64 (build) or ROOM/deltas/x.claim.json (merge).
-The base DAG is res/ROOM/merged-ROOM-*; an optional ROOM/submissions/manifest.json
-{"base": "merged-ROOM-..."} pins one, else the deepest wins. --base overrides.
+The base DAG is selected by ROOM/targets.csv; an optional
+ROOM/submissions/manifest.json {"base": "merged-ROOM-..."} or --base can pin
+one explicitly.
 
 Stored DAGs are per-line base64, in line-aligned parts. Any command that loads
 a DAG accepts FILE or, if FILE is absent, its .b64 parts (or a single FILE.b64).
@@ -360,9 +362,15 @@ def read_manifest(submission):
 
 
 def submission_base(path, override=None):
-    """(room, base DAG path) for a submission, honouring its manifest.json."""
+    """(room, base DAG path), respecting explicit and published selections."""
     room = room_of(path)
-    return room, override or find_base(room, read_manifest(path).get("base"))
+    manifest_base = read_manifest(path).get("base")
+    if override:
+        return room, override
+    if manifest_base:
+        return room, find_base(room, manifest_base)
+    table = read_table(targets_file(room))
+    return room, table.get("base") or find_base(room)
 
 
 TABLE_COLS = ("rank", "event_id", "refs", "min_child_depth", "prize_sats")
@@ -678,8 +686,18 @@ def claim_base_name(args, room, claim):
     """Validate the claim's room, delta path and base name; return the base name."""
     if claim.get("room") != room:
         sys.exit(f"{args.claim}: claim room does not match its directory")
-    if not re.fullmatch(DELTA_PATH.format(room=room), claim["delta"]):
-        sys.exit(f"{args.claim}: bad delta path {claim['delta']!r}")
+    claim_stem = os.path.basename(args.claim)
+    match = re.fullmatch(r"([0-9a-f]{16})\.claim\.json", claim_stem)
+    if not match:
+        sys.exit(f"{args.claim}: bad claim filename")
+    digest = match.group(1)
+    expected_delta = f"{room}/deltas/{digest}.delta.jsonl.b64"
+    if not re.fullmatch(DELTA_PATH.format(room=room), claim.get("delta", "")):
+        sys.exit(f"{args.claim}: bad delta path {claim.get('delta')!r}")
+    if claim["delta"] != expected_delta:
+        sys.exit(f"{args.claim}: delta must be its sibling {expected_delta!r}")
+    if claim.get("delta_sha256_16") != digest:
+        sys.exit(f"{args.claim}: claim digest does not match its filename")
     base_name = args.base or claim["base"]
     if not re.fullmatch(rf"res/{room}/merged-{room}-[A-Za-z0-9._-]+\.jsonl", base_name):
         sys.exit(f"{args.claim}: bad base {base_name!r}")
@@ -753,9 +771,10 @@ def btc(sats):
     return f"{sats // 10**8}.{sats % 10**8:08d}"
 
 
-def unpaid_totals(room, overrides):
-    """Sum unpaid ledger prizes per (claimant, address); address may be None."""
-    totals = {}
+def unpaid_rows(room, overrides):
+    """Return unpaid ledger rows grouped by their effective payout address."""
+    by_address = {}
+    noaddr = []
     path = f"{room}/ledger.jsonl"
     if not os.path.exists(path):
         sys.exit(f"no ledger for room {room}")
@@ -764,28 +783,35 @@ def unpaid_totals(room, overrides):
             row = orjson.loads(line)
             if row["status"] != "unpaid":
                 continue
-            key = (row["claimant"], overrides.get(row["claimant"], row.get("address")))
-            totals[key] = totals.get(key, 0) + row["prize_sats"]
-    return totals
+            address = overrides.get(row["claimant"], row.get("address"))
+            if address is None or not ADDR.fullmatch(str(address)):
+                noaddr.append((row, row["prize_sats"]))
+                continue
+            by_address.setdefault(address, []).append(row)
+    return by_address, noaddr
 
 
 def cmd_payout(args):
     """Print the unsigned payout transaction for a room's unpaid prizes."""
     overrides = dict(x.split("=", 1) for x in args.address)
-    totals = unpaid_totals(args.room, overrides)
-    pay, carry, noaddr = {}, [], []
-    for (who, addr), sats in sorted(totals.items()):
-        if addr is None or not ADDR.fullmatch(addr):
-            noaddr.append((who, sats))
-        elif sats < args.min:
-            carry.append((who, sats))
+    by_address, noaddr = unpaid_rows(args.room, overrides)
+    pay, carry, included = {}, [], []
+    for address, rows in sorted(by_address.items()):
+        sats = sum(row["prize_sats"] for row in rows)
+        if sats < args.min:
+            carry.append((address, sats))
         else:
-            pay[addr] = pay.get(addr, 0) + sats
-    for who, sats in noaddr:
-        print(f"no valid address, skipped: {who} {sats} sats", file=sys.stderr)
-    for who, sats in carry:
+            pay[address] = sats
+            included.extend({"row": row, "address": address} for row in rows)
+    for row, sats in noaddr:
         print(
-            f"below {args.min} sats, carried over: {who} {sats} sats", file=sys.stderr
+            f"no valid address, skipped: {row['claimant']} {sats} sats",
+            file=sys.stderr,
+        )
+    for address, sats in carry:
+        print(
+            f"below {args.min} sats, carried over: {address} {sats} sats",
+            file=sys.stderr,
         )
     if not pay:
         sys.exit("nothing to pay")
@@ -799,10 +825,69 @@ def cmd_payout(args):
     cmd += [f"outputs={outputs}", f"options={orjson.dumps(options).decode()}"]
     print(f"# {len(pay)} outputs, {sum(pay.values())} sats (+ network fee)")
     print(" ".join(f"'{c}'" if " " in c or "[" in c or "{" in c else c for c in cmd))
+    write_json(
+        f"{args.room}/payout-pending.json",
+        {"outputs": pay, "rows": included},
+    )
     if args.run:
         res = orjson.loads(subprocess.run(cmd, check=True, capture_output=True).stdout)
         print(f"# unsigned PSBT, fee {res['fee']} BTC")
         print(res["psbt"])
+
+
+def cmd_paid(args):
+    """Mark the exact rows from the latest payout batch as paid."""
+    if not ROOM.fullmatch(args.room):
+        sys.exit(f"invalid room ID {args.room!r}")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", args.txid):
+        sys.exit("transaction ID must be 64 hexadecimal characters")
+    pending_path = f"{args.room}/payout-pending.json"
+    if not os.path.exists(pending_path):
+        sys.exit(f"no pending payout for room {args.room}")
+    pending = read_json(pending_path)
+    ledger_path = f"{args.room}/ledger.jsonl"
+    if not os.path.exists(ledger_path):
+        sys.exit(f"no ledger for room {args.room}")
+
+    with open(ledger_path, "rb") as f:
+        ledger = [orjson.loads(line) for line in f if line.strip()]
+    pending_rows = pending.get("rows")
+    if not isinstance(pending_rows, list) or not pending_rows:
+        sys.exit("pending payout has no rows")
+    by_target = {}
+    for row in ledger:
+        target = row.get("target")
+        if target in by_target:
+            sys.exit(f"duplicate ledger row for target {target!r}")
+        by_target[target] = row
+
+    selected = []
+    for item in pending_rows:
+        snapshot = item.get("row") if isinstance(item, dict) else None
+        target = snapshot.get("target") if isinstance(snapshot, dict) else None
+        row = by_target.get(target)
+        if row != snapshot or row.get("status") != "unpaid":
+            sys.exit(
+                f"pending payout row for target {target!r} no longer matches ledger"
+            )
+        selected.append(row)
+
+    for row in selected:
+        row["status"] = "paid"
+        row["txid"] = args.txid.lower()
+    temp_path = f"{ledger_path}.tmp"
+    with open(temp_path, "wb") as f:
+        for row in ledger:
+            f.write(orjson.dumps(row) + b"\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp_path, ledger_path)
+    os.unlink(pending_path)
+    print(
+        f"marked {len(selected)} ledger row(s), "
+        f"{sum(r['prize_sats'] for r in selected)} sats, "
+        f"paid in {args.txid.lower()}"
+    )
 
 
 def write_parts(stem, lines, size):
@@ -910,6 +995,10 @@ def main():
     s.add_argument("--address", action="append", default=[], metavar="WHO=ADDR")
     s.add_argument("--run", action="store_true", help="ask bitcoin-cli for the PSBT")
     s.set_defaults(f=cmd_payout)
+    s = sp.add_parser("paid")
+    s.add_argument("room")
+    s.add_argument("txid")
+    s.set_defaults(f=cmd_paid)
     for name in ("encode", "decode"):
         s = sp.add_parser(name)
         s.add_argument("files", nargs="*")
