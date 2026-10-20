@@ -1,6 +1,6 @@
-<!-- Delete this guidance once you've read it. -->
+# Which bounty?
 
-## Which bounty?
+<!-- Delete this guidance once you've read it. -->
 
 Room ID: `<ROOM>` (the 43-character folder name, e.g.
 `L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI`)

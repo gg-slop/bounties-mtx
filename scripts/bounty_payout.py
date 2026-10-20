@@ -48,38 +48,21 @@ def unpaid_rows(room, overrides):
     return by_address, noaddr
 
 
-def cmd_payout(args):
-    """Print the unsigned payout transaction for a room's unpaid prizes."""
-    if not ROOM.fullmatch(args.room):
-        sys.exit(f"invalid room ID {args.room!r}")
-    pending_path = f"{args.room}/payout-pending.json"
-    if os.path.exists(pending_path) and not args.replace:
-        sys.exit(
-            f"pending payout already exists at {pending_path}; "
-            "use --replace only if the earlier batch was not broadcast"
-        )
-    overrides = dict(x.split("=", 1) for x in args.address)
-    by_address, noaddr = unpaid_rows(args.room, overrides)
+def select_payout_rows(by_address, minimum):
+    """Split eligible address totals from carried rows; return exact batch rows."""
     pay, carry, included = {}, [], []
     for address, rows in sorted(by_address.items()):
         sats = sum(row["prize_sats"] for row in rows)
-        if sats < args.min:
+        if sats < minimum:
             carry.append((address, sats))
         else:
             pay[address] = sats
             included.extend({"row": row, "address": address} for row in rows)
-    for row, sats in noaddr:
-        print(
-            f"no valid address, skipped: {row['claimant']} {sats} sats",
-            file=sys.stderr,
-        )
-    for address, sats in carry:
-        print(
-            f"below {args.min} sats, carried over: {address} {sats} sats",
-            file=sys.stderr,
-        )
-    if not pay:
-        sys.exit("nothing to pay")
+    return pay, carry, included
+
+
+def run_payout(pay, args, pending_path, included):
+    """Print and optionally run the Bitcoin CLI PSBT command; save its batch."""
     outputs = (
         "[" + ",".join(f'{{"{a}":{btc(v)}}}' for a, v in sorted(pay.items())) + "]"
     )
@@ -95,6 +78,34 @@ def cmd_payout(args):
         res = orjson.loads(subprocess.run(cmd, check=True, capture_output=True).stdout)
         print(f"# unsigned PSBT, fee {res['fee']} BTC")
         print(res["psbt"])
+
+
+def cmd_payout(args):
+    """Print the unsigned payout transaction for a room's unpaid prizes."""
+    if not ROOM.fullmatch(args.room):
+        sys.exit(f"invalid room ID {args.room!r}")
+    pending_path = f"{args.room}/payout-pending.json"
+    if os.path.exists(pending_path) and not args.replace:
+        sys.exit(
+            f"pending payout already exists at {pending_path}; "
+            "use --replace only if the earlier batch was not broadcast"
+        )
+    overrides = dict(x.split("=", 1) for x in args.address)
+    by_address, noaddr = unpaid_rows(args.room, overrides)
+    pay, carry, included = select_payout_rows(by_address, args.min)
+    for row, sats in noaddr:
+        print(
+            f"no valid address, skipped: {row['claimant']} {sats} sats",
+            file=sys.stderr,
+        )
+    for address, sats in carry:
+        print(
+            f"below {args.min} sats, carried over: {address} {sats} sats",
+            file=sys.stderr,
+        )
+    if not pay:
+        sys.exit("nothing to pay")
+    run_payout(pay, args, pending_path, included)
 
 
 def cmd_paid(args):

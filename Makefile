@@ -10,7 +10,7 @@ MAKEFLAGS += --no-print-directory
 
 .PHONY: format
 format:	##H Format code
-	prettier --prose-wrap always --print-width 80 --write $$(git ls-files '*.md' '*.y*ml')
+	prettier --prose-wrap always --print-width 80 --write $$(git ls-files '*.md' '*.y*ml' '*.json')
 	black $$(git ls-files '*.py')
 	isort $$(git ls-files '*.py')
 	ruff format $$(git ls-files '*.py')
@@ -20,6 +20,7 @@ format:	##H Format code
 
 .PHONY: lint
 lint:	##H Run python lints
+	-markdownlint $$(git ls-files '*.md')
 	ruff check $$(git ls-files '*.py')
 	mypy $$(git ls-files '*.py')
 	flake8 --max-line-length 88 $$(git ls-files '*.py')

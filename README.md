@@ -21,5 +21,6 @@ rezzy --debug -i merged-L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI-v12-d1-71756
 # print missing event IDs
 rezzy inspect gaps -i merged-L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI-v12-d1-71756.jsonl
 # print detailed report on missing/gaps
-rezzy inspect gaps -i merged-L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI-v12-d1-71756.jsonl --json
+rezzy inspect gaps -i \
+  merged-L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI-v12-d1-71756.jsonl --json
 ```
