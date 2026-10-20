@@ -6,3 +6,7 @@ __pycache__/
 
 # other ignores
 .env
+
+# federation fetch output (plaintext room data)
+fetched/
+*.log
