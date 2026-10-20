@@ -17,24 +17,39 @@ remains eligible for the award in its own row.
 
 ## Claiming
 
-1. Encode your events as per-line base64 and put the file in
-   `<ROOM>/submissions/<you>.00.jsonl.b64`, where `<ROOM>` is the 43-character
-   room ID of the bounty you are targeting
-   (`scripts/bounty.py encode <ROOM>/submissions/<you>.jsonl`, then commit only
-   the `.b64`; plain `.jsonl` is git-ignored and must never be committed). One
-   file per claim. Open a PR. The directory selects the bounty, and its
-   published `targets.csv` selects the authoritative base DAG. A submission
-   manifest may provide a payout address but cannot select a different base.
-2. CI verifies every event's ID equals its room-v12 reference hash (no trust
-   needed), rejects conflicts with the base, and writes
-   `<ROOM>/deltas/<digest>.delta.jsonl.b64` (only events absent from base, also
-   base64) plus `<digest>.claim.json` (closed targets, dangling links).
-3. For same-repository PRs, CI replaces the encoded submission with its delta
-   and keeps a copy of the submission as a 14-day artifact. For fork PRs, the
-   source branch retains the encoded submission; a maintainer runs
-   `scripts/bounty.py build` and adds the resulting delta.
+For each room, one PR adds exactly one submission file, plus that room's
+`submissions/manifest.json`. `<ROOM>` is the base-64-url room ID; the directory
+selects the bounty.
 
-Base64 is an encoding, not privacy: anyone can decode it.
+1. Get the base DAG: `git submodule update --init`, then
+   `python3 scripts/bounty.py decode` (writes plaintext to `res/<ROOM>/`, which
+   is git-ignored).
+2. Find the missing IDs: `rezzy inspect gaps -i res/<ROOM>/merged-….jsonl`. The
+   targets and prizes are in `<ROOM>/targets.csv`.
+3. Put the events you recovered, one JSON event per line, in
+   `<ROOM>/submissions/<username>.jsonl`, then
+   `python3 scripts/bounty.py encode <ROOM>/submissions/<username>.jsonl`.
+   `<username>` is any unique name, such as your GitHub username; add `-2` for a
+   later claim. The `.00` that `encode` appends is a part number, not a claim
+   counter.
+4. Commit **only** `<ROOM>/submissions/<username>.00.jsonl.b64` and
+   `<ROOM>/submissions/manifest.json`, then open the PR. Never commit plaintext
+   `.jsonl`. Base64 is an encoding, not privacy: anyone can decode it.
+5. The manifest is `{"payout": "bc1q…"}`. No address, no payout. It may also pin
+   the base as `{"base": "merged-<ROOM>-…"}`, but it cannot select a different
+   one: the published `targets.csv` fixes the authoritative base DAG, and claims
+   against another base are rejected.
+
+What CI then does:
+
+- CI verifies every event's ID equals its room-v12 reference hash (no trust
+  needed), rejects conflicts with the base, and writes
+  `<ROOM>/deltas/<digest>.delta.jsonl.b64` (only events absent from base, also
+  base64) plus `<digest>.claim.json` (closed targets, dangling links).
+- For same-repository PRs, CI replaces the encoded submission with its delta and
+  keeps a copy of the submission as a 14-day artifact. For fork PRs, the source
+  branch retains the encoded submission; a maintainer runs
+  `scripts/bounty.py build` and adds the resulting delta.
 
 ## Closure
 
