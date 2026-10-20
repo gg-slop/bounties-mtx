@@ -44,9 +44,6 @@ jobs:
             prior_file="$RUNNER_TEMP/prior-$room.txt"
             if [[ ! -f "$prior_file" ]]; then
               : > "$prior_file"
-              for d in "$room"/deltas/*.delta.jsonl.b64; do
-                printf '%s\n' "$d" >> "$prior_file"
-              done
               for d in trusted/"$room"/deltas/*.delta.jsonl.b64; do
                 printf '%s\n' "$d" >> "$prior_file"
               done
@@ -115,9 +112,6 @@ jobs:
             prior_file="$RUNNER_TEMP/prior-$room.txt"
             if [[ ! -f "$prior_file" ]]; then
               : > "$prior_file"
-              for d in "$room"/deltas/*.delta.jsonl.b64; do
-                printf '%s\n' "$d" >> "$prior_file"
-              done
               for d in ../trusted/"$room"/deltas/*.delta.jsonl.b64; do
                 printf '%s\n' "$d" >> "$prior_file"
               done
