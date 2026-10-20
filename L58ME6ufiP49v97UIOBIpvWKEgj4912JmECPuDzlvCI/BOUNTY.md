@@ -61,10 +61,9 @@ targets.
 - Payouts: claimants list a Bitcoin address as `"payout"` in their
   `manifest.json`. `scripts/bounty.py payout <ROOM> --min 5000` aggregates
   unpaid prizes by address, then applies the minimum, and prints the unsigned
-  `bitcoin-cli walletcreatefundedpsbt` command; add `--run` to have your own
-  node return the PSBT. After broadcasting, run
-  `scripts/bounty.py paid <ROOM> <TXID>` to mark the rows in that payout paid. A
-  pending batch must be recorded as paid before creating another; use
-  `--replace` only to discard a batch that was not broadcast. Nothing is signed
-  or broadcast by this repo. Address totals under `--min` carry over (on-chain
-  outputs below ~300–550 sats are dust).
+  `bitcoin-cli walletcreatefundedpsbt` command to run manually with your own
+  node. After broadcasting, run `scripts/bounty.py paid <ROOM> <TXID>` to mark
+  the rows in that payout paid. A pending batch must be recorded as paid before
+  creating another; use `--replace` only to discard a batch that was not
+  broadcast. Nothing is signed or broadcast by this repo. Address totals under
+  `--min` carry over (on-chain outputs below ~300–550 sats are dust).

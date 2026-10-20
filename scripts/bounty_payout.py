@@ -2,7 +2,7 @@
 
 import os
 import re
-import subprocess
+import shlex
 import sys
 
 import orjson
@@ -61,8 +61,8 @@ def select_payout_rows(by_address, minimum):
     return pay, carry, included
 
 
-def run_payout(pay, args, pending_path, included):
-    """Print and optionally run the Bitcoin CLI PSBT command; save its batch."""
+def print_payout(pay, args, pending_path, included):
+    """Print the Bitcoin CLI PSBT command and save its pending batch."""
     outputs = (
         "[" + ",".join(f'{{"{a}":{btc(v)}}}' for a, v in sorted(pay.items())) + "]"
     )
@@ -72,12 +72,8 @@ def run_payout(pay, args, pending_path, included):
     cmd = ["bitcoin-cli", "-named", "walletcreatefundedpsbt", "inputs=[]"]
     cmd += [f"outputs={outputs}", f"options={orjson.dumps(options).decode()}"]
     print(f"# {len(pay)} outputs, {sum(pay.values())} sats (+ network fee)")
-    print(" ".join(f"'{c}'" if " " in c or "[" in c or "{" in c else c for c in cmd))
+    print(shlex.join(cmd))
     write_json(pending_path, {"outputs": pay, "rows": included})
-    if args.run:
-        res = orjson.loads(subprocess.run(cmd, check=True, capture_output=True).stdout)
-        print(f"# unsigned PSBT, fee {res['fee']} BTC")
-        print(res["psbt"])
 
 
 def cmd_payout(args):
@@ -105,7 +101,36 @@ def cmd_payout(args):
         )
     if not pay:
         sys.exit("nothing to pay")
-    run_payout(pay, args, pending_path, included)
+    print_payout(pay, args, pending_path, included)
+
+
+def rows_to_confirm(pending_rows, ledger, txid):
+    """Validate pending snapshots, allowing an already-applied matching txid."""
+    by_target = {}
+    for row in ledger:
+        target = row.get("target")
+        if target in by_target:
+            sys.exit(f"duplicate ledger row for target {target!r}")
+        by_target[target] = row
+
+    selected = []
+    total_sats = 0
+    for item in pending_rows:
+        snapshot = item.get("row") if isinstance(item, dict) else None
+        if not isinstance(snapshot, dict) or snapshot.get("status") != "unpaid":
+            sys.exit("pending payout contains an invalid ledger snapshot")
+        target = snapshot.get("target")
+        row = by_target.get(target)
+        if row == snapshot:
+            selected.append(row)
+        else:
+            expected = {**snapshot, "status": "paid", "txid": txid}
+            if row != expected:
+                sys.exit(
+                    f"pending payout row for target {target!r} no longer matches ledger"
+                )
+        total_sats += snapshot["prize_sats"]
+    return selected, total_sats
 
 
 def cmd_paid(args):
@@ -127,37 +152,22 @@ def cmd_paid(args):
     pending_rows = pending.get("rows")
     if not isinstance(pending_rows, list) or not pending_rows:
         sys.exit("pending payout has no rows")
-    by_target = {}
-    for row in ledger:
-        target = row.get("target")
-        if target in by_target:
-            sys.exit(f"duplicate ledger row for target {target!r}")
-        by_target[target] = row
-
-    selected = []
-    for item in pending_rows:
-        snapshot = item.get("row") if isinstance(item, dict) else None
-        target = snapshot.get("target") if isinstance(snapshot, dict) else None
-        row = by_target.get(target)
-        if row != snapshot or row.get("status") != "unpaid":
-            sys.exit(
-                f"pending payout row for target {target!r} no longer matches ledger"
-            )
-        selected.append(row)
+    txid = args.txid.lower()
+    selected, total_sats = rows_to_confirm(pending_rows, ledger, txid)
 
     for row in selected:
         row["status"] = "paid"
-        row["txid"] = args.txid.lower()
-    temp_path = f"{ledger_path}.tmp"
-    with open(temp_path, "wb") as f:
-        for row in ledger:
-            f.write(orjson.dumps(row) + b"\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(temp_path, ledger_path)
+        row["txid"] = txid
+    if selected:
+        temp_path = f"{ledger_path}.tmp"
+        with open(temp_path, "wb") as f:
+            for row in ledger:
+                f.write(orjson.dumps(row) + b"\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, ledger_path)
     os.unlink(pending_path)
     print(
-        f"marked {len(selected)} ledger row(s), "
-        f"{sum(r['prize_sats'] for r in selected)} sats, "
-        f"paid in {args.txid.lower()}"
+        f"confirmed {len(pending_rows)} ledger row(s), "
+        f"{total_sats} sats, paid in {txid}"
     )

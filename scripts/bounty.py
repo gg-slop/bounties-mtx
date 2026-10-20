@@ -9,7 +9,7 @@
                                             -> re-verifies, appends
                                                ROOM/ledger.jsonl
   bounty.py payout  ROOM [--min SATS] [--fee-rate N] [--change ADDR]
-                                            [--replace] [--run]
+                                            [--replace]
                                             -> prints the unsigned payout txn
   bounty.py paid    ROOM TXID              -> records a completed payout
   bounty.py encode [FILE...] [--lines N]  -> stem.NN.jsonl.b64 (50K lines each)
@@ -894,7 +894,6 @@ def main():
         action="store_true",
         help="replace an unbroadcast pending payout batch",
     )
-    s.add_argument("--run", action="store_true", help="ask bitcoin-cli for the PSBT")
     s.set_defaults(f=_payout.cmd_payout)
     s = sp.add_parser("paid")
     s.add_argument("room")

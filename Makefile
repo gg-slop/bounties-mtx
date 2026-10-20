@@ -20,7 +20,7 @@ format:	##H Format code
 
 .PHONY: lint
 lint:	##H Run python lints
-	-markdownlint $$(git ls-files '*.md')
+	markdownlint $$(git ls-files '*.md')
 	ruff check $$(git ls-files '*.py')
 	mypy $$(git ls-files '*.py')
 	flake8 --max-line-length 88 $$(git ls-files '*.py')
