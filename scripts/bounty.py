@@ -54,7 +54,9 @@ _payout_spec = importlib.util.spec_from_file_location(
     "bounty_payout",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "bounty_payout.py"),
 )
+assert _payout_spec is not None
 _payout = importlib.util.module_from_spec(_payout_spec)
+assert _payout_spec.loader is not None
 _payout_spec.loader.exec_module(_payout)
 
 # Redaction allow-lists (room v11+; v12 additionally drops room_id on create).
