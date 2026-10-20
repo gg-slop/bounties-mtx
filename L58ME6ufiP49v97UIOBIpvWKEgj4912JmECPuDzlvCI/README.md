@@ -1,16 +1,20 @@
 # Bounty for Matrix HQ (missing `prevs`)
 
-Originally promised at 3 satoshi per completed head at ~6500 heads, depth 91136.
+Originally promised at 3 satoshi per completed event at approximately 6,500
+events, depth 91,136.
 
-The published 20,000-sat table covers 2,163 unique missing event IDs. The rezzy
-warning's 1,820 count is the number of local events that reference missing IDs;
-multiple events can point to the same ID, and auth links add targets as well.
+The published 20,000-sat table covers 2,163 unique initial missing event IDs
+referenced by the fixed base. The Rezzy warning's 1,820 count is the number of
+local events that reference missing `prev_events`; multiple events can point to
+the same ID, and missing `auth_events` add targets as well.
 
-These 2,163 are the initial targets; fetching them can reveal more missing
-ancestors. To claim one you must close its whole chain: every
-`prev_events`/`auth_events` link of the target and of each ancestor,
-recursively, until it reaches the base. Ancestors you find along the way are not
-separate targets and are not paid separately.
+These 2,163 are only the initial targets. Fetching one can reveal further
+missing ancestors, which can reveal more. A target closes only when the base,
+earlier accepted deltas, and the current claim collectively provide every
+`prev_events`/`auth_events` link of the target and each ancestor, recursively,
+until the chain reaches the base. Ancestor gaps are not added as new targets or
+paid just for being ancestors. If an ancestor is also one of the published
+targets, it remains eligible under its own row.
 
 ## Terms
 

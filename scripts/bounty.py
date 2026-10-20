@@ -35,7 +35,9 @@ kept only when its Matrix content hash validates; otherwise it is redacted.
 A target is *closed* when it and every prev_events/auth_events link of its
 ancestors resolve into the accumulated event pool. Targets are only the initial
 missing IDs: closing one means following every link, recursively,
-down to events in BASE; the ancestors found on the way are not targets.
+down to events in BASE. Newly revealed ancestor gaps are not added as targets;
+if an ancestor is also an initial target, it remains eligible under its own
+row.
 """
 
 import argparse

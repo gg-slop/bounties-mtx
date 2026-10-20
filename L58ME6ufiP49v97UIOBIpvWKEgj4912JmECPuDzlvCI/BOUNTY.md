@@ -8,12 +8,12 @@
 contribute additional targets. The fixed table was generated with
 `scripts/bounty.py targets L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI`.
 
-The 2,163 targets are the _initial_ missing IDs, not the whole of the missing
-history. Fetching a target event usually reveals further
-`prev_events`/`auth_events` that are also missing (newly revealed ancestor
-gaps), and those can reveal more. None of those deeper ancestors is a target of
-its own and none is paid separately; they are the work needed to close the
-target that leads to them.
+The 2,163 targets are the _initial_ missing IDs referenced by the fixed base,
+not the whole of the missing history. Fetching a target event can reveal further
+missing `prev_events`/`auth_events` (newly revealed ancestor gaps), and those
+can reveal more. Ancestor gaps are not added as new targets or paid just for
+being ancestors. If an ancestor is also one of the published initial targets, it
+remains eligible for the award in its own row.
 
 ## Claiming
 
@@ -45,11 +45,14 @@ ancestor; the award goes to the claim that first makes the full trace
 resolvable. Partial traces earn nothing until closure. One claim can close many
 targets.
 
-Closure is recursive: you must follow every link of the target, of its
-ancestors, and so on, until each chain reaches an event already in the base. A
-target whose event you hold, but whose ancestors are not all resolved, is still
-open. Shared ancestors count once and can be supplied by any claim, but the
-prize goes only to the claim that completes the target.
+Closure is recursive: the base, earlier accepted deltas, and the current claim
+must collectively provide every link of the target, its ancestors, and so on,
+until each chain reaches an event already in the base. A target whose event is
+available but whose ancestors are not all resolved is still open. A shared
+ancestor only needs to be supplied once to the accumulated event pool. If that
+ancestor is also an initial target, its own row follows the same closure and
+award rules. The prize for each target goes to the claim that first completes
+its chain.
 
 ## Payout
 

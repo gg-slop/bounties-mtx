@@ -32,9 +32,10 @@ when the content hash does not validate. It builds
 `.claim.json` listing targets newly closed by this claim. Closure uses the base,
 earlier accepted deltas, and your events. A later claim can complete an earlier
 partial trace; the award goes to the claim that first makes the full trace
-resolvable. The listed targets are only the starting points: you must also
-supply every missing ancestor, recursively, down to the base, or the target
-stays open. See `<ROOM>/BOUNTY.md`.
+resolvable. The listed targets are only the starting points: the base, earlier
+accepted deltas, and this claim must collectively provide every missing
+ancestor, recursively, down to the base, or the target stays open. See
+`<ROOM>/BOUNTY.md`.
 
 ## Payment
 
