@@ -27,11 +27,14 @@ a DAG accepts FILE or, if FILE is absent, its .b64 parts (or a single FILE.b64).
 
 Builds may use explicitly selected earlier deltas. The merge workflow replays
 claims in order, adding each verified delta to the pool used for later claims.
-Requires orjson (canonical bytes must be identical everywhere).
+Requires orjson (canonical bytes must be identical everywhere) and rezzy:
+set REZZY_LIB to the absolute path of librezzy_ffi. rezzy owns every room-version rule
+(reference hash, redaction, content hash); this script only checks the results.
 
 A target is a deduplicated prev_events/auth_events ID referenced by BASE but
-absent from it. Event IDs are room-v12 reference hashes. Submitted content is
-kept only when its Matrix content hash validates; otherwise it is redacted.
+absent from it. Event IDs are the room version's reference hashes, which the
+base's own m.room.create declares. Submitted content is kept only when its
+content hash validates; otherwise it is redacted.
 A target is *closed* when it and every prev_events/auth_events link of its
 ancestors resolve into the accumulated event pool. Targets are only the initial
 missing IDs: closing one means following every link, recursively,
@@ -43,6 +46,7 @@ row.
 import argparse
 import base64
 import csv
+import ctypes
 import glob
 import hashlib
 import importlib
@@ -64,73 +68,10 @@ _payout = importlib.util.module_from_spec(_payout_spec)
 assert _payout_spec.loader is not None
 _payout_spec.loader.exec_module(_payout)
 
-# Redaction allow-lists (room v11+; v12 additionally drops room_id on create).
-TOP = {
-    "event_id",
-    "type",
-    "room_id",
-    "sender",
-    "state_key",
-    "content",
-    "hashes",
-    "signatures",
-    "depth",
-    "prev_events",
-    "auth_events",
-    "origin_server_ts",
-}
-CONTENT = {
-    "m.room.create": {"creator", "room_version", "m.federate", "predecessor", "type"},
-    "m.room.member": {"membership", "join_authorised_via_users_server"},
-    "m.room.power_levels": {
-        "ban",
-        "events",
-        "events_default",
-        "kick",
-        "redact",
-        "state_default",
-        "users",
-        "users_default",
-        "invite",
-    },
-    "m.room.join_rules": {"join_rule", "allow"},
-    "m.room.history_visibility": {"history_visibility"},
-    "m.room.redaction": {"redacts"},
-}
-
 
 def canon(o):
     """Canonical JSON bytes (sorted keys, compact, UTF-8)."""
     return orjson.dumps(o, option=orjson.OPT_SORT_KEYS)
-
-
-def reference_object(ev):
-    """The redacted event object used to calculate its room-v12 event ID."""
-    t = ev.get("type")
-    e = {
-        k: v for k, v in ev.items() if k in TOP and k not in ("signatures", "event_id")
-    }
-    if t == "m.room.create":
-        e.pop("room_id", None)
-    c = e.get("content", {})
-    keep = CONTENT.get(t, set())
-    e["content"] = {k: v for k, v in c.items() if k in keep}
-    if (
-        t == "m.room.member"
-        and "third_party_invite" in c
-        and "signed" in c["third_party_invite"]
-    ):
-        e["content"]["third_party_invite"] = {
-            "signed": c["third_party_invite"]["signed"]
-        }
-    return e
-
-
-def reference_id(ev):
-    """Room-v12 event ID: sha256 of the redacted event, unpadded urlsafe b64."""
-    e = reference_object(ev)
-    h = hashlib.sha256(canon(e)).digest()
-    return "$" + base64.urlsafe_b64encode(h).rstrip(b"=").decode()
 
 
 PART = re.compile(r"\.\d+\.jsonl(\.b64)?$")
@@ -178,83 +119,113 @@ def load(path):
     return evs
 
 
-def content_hash_valid(ev):
-    """Whether hashes.sha256 covers the complete event content."""
-    hashes = ev.get("hashes")
-    expected = hashes.get("sha256") if isinstance(hashes, dict) else None
-    if not isinstance(expected, str):
-        return False
-    unhashed = {
-        k: v
-        for k, v in ev.items()
-        if k not in ("event_id", "unsigned", "signatures", "hashes")
-    }
-    actual = base64.b64encode(hashlib.sha256(canon(unhashed)).digest())
-    actual = actual.rstrip(b"=").decode("ascii")
-    return actual == expected
+NO_HASH_IDS = {"1", "2"}  # their event IDs are not content hashes
 
 
-def redact_event(ev):
-    """Return the event with content restricted to the room-version allow-list."""
-    if not isinstance(ev.get("content", {}), dict):
-        sys.exit(f"{ev.get('event_id', '<unknown>')}: content must be an object")
-    redacted = {k: v for k, v in ev.items() if k in TOP}
-    t = ev.get("type")
-    c = ev.get("content", {})
-    redacted["content"] = {k: v for k, v in c.items() if k in CONTENT.get(t, set())}
-    if (
-        t == "m.room.member"
-        and "third_party_invite" in c
-        and "signed" in c["third_party_invite"]
-    ):
-        redacted["content"]["third_party_invite"] = {
-            "signed": c["third_party_invite"]["signed"]
-        }
-    return redacted
+class Event(dict):
+    """A checked event; `full` says whether its content hash covers its content."""
+
+    full = False
 
 
-def validate_event(event, room):
-    """Return a hash-checked or safely redacted event, or exit on invalid ID/room."""
-    if not isinstance(event, dict) or not isinstance(event.get("event_id"), str):
-        sys.exit("event has no event_id")
-    eid = event["event_id"]
-    if event.get("type") == "m.room.create":
-        if event.get("room_id", room) != room:
-            sys.exit(f"{eid}: wrong room")
-    elif event.get("room_id") != room:
-        sys.exit(f"{eid}: wrong room")
-    try:
-        normalized = event if content_hash_valid(event) else redact_event(event)
-        actual = reference_id(normalized)
-    except (KeyError, TypeError, ValueError) as exc:
-        sys.exit(f"{eid}: malformed event: {exc}")
-    if actual != eid:
-        sys.exit(f"{eid}: event_id does not match reference hash")
-    return normalized
+def full_content(ev):
+    """Whether EV carries content that its hash covers (not a redacted copy)."""
+    return getattr(ev, "full", False)
 
 
-def equivalent_events(left, right):
-    """Compare copies by their redacted reference-hash representation."""
-    return canon(reference_object(left)) == canon(reference_object(right))
+def room_info(base):
+    """(room_id, room_version) as the base DAG itself declares them."""
+    room_id = version = None
+    for e in base.values():
+        room_id = room_id or e.get("room_id")
+        if e.get("type") == "m.room.create":
+            version = str(e.get("content", {}).get("room_version", "1"))
+        if room_id and version:
+            break
+    if not (room_id and version):
+        sys.exit("base has no m.room.create event or room_id")
+    if version in NO_HASH_IDS:
+        sys.exit(f"room version {version} event IDs are not hashes; unsupported")
+    return room_id, version
 
 
-def load_delta(path, room, base):
+def rezzy_events(lines, room_version):
+    """Describe each canonical JSON line of LINES through rezzy's C ABI.
+
+    rezzy owns the room-version rules (reference hash, redaction, content hash).
+    REZZY_LIB must be an absolute path: the working directory may be a PR head.
+    """
+    path = os.environ.get("REZZY_LIB", "")
+    if not os.path.isabs(path) or not os.path.isfile(path):
+        sys.exit("set REZZY_LIB to the absolute path of librezzy_ffi")
+    lib = ctypes.CDLL(path)
+    lib.rezzy_hash_events.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    lib.rezzy_hash_events.restype = ctypes.c_int
+    lib.rezzy_free.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
+    lib.rezzy_free.restype = None
+    data = b"\n".join(lines) + b"\n"
+    out, out_len = ctypes.POINTER(ctypes.c_uint8)(), ctypes.c_size_t()
+    status = lib.rezzy_hash_events(
+        room_version.encode(), data, len(data), ctypes.byref(out), ctypes.byref(out_len)
+    )
+    text = ctypes.string_at(out, out_len.value) if out else b""
+    lib.rezzy_free(out, out_len)
+    if status != 0:
+        sys.exit(f"rezzy failed: {text.decode(errors='replace')[:300]}")
+    records = orjson.loads(text)["events"]
+    if len(records) != len(lines):
+        sys.exit("rezzy returned a different number of records than events")
+    return records
+
+
+def check_event(event, rec, room_id):
+    """(Event, None) for a verified event, or (None, reason)."""
+    if "error" in rec:
+        return None, rec["error"]
+    claimed = event.get("event_id") if isinstance(event, dict) else None
+    if not isinstance(claimed, str):
+        return None, "event has no event_id"
+    if claimed != rec["event_id"]:
+        return None, f"{claimed}: event_id does not match reference hash"
+    room = rec.get("room_id")
+    if room != room_id and not (room is None and rec.get("type") == "m.room.create"):
+        return None, f"{claimed}: wrong room"
+    if rec["content_hash_ok"]:
+        kept = Event(event)
+        kept.full = True
+    else:  # keep only what the room version's redaction rules preserve
+        kept = Event(rec["redacted"])
+        kept["event_id"] = claimed
+    return kept, None
+
+
+def check_events(events, base):
+    """[(Event, None) | (None, reason)] for each of EVENTS, in order."""
+    if not events:
+        return []
+    room_id, version = room_info(base)
+    records = rezzy_events([canon(e) for e in events], version)
+    return [check_event(e, r, room_id) for e, r in zip(events, records)]
+
+
+def load_delta(path, base):
     """Load and validate one delta; its filename digest covers canonical source rows."""
+    source = [orjson.loads(line) for line in iter_lines(path)]
     events = {}
-    source = []
-    for line in iter_lines(path):
-        event = orjson.loads(line)
-        source.append(event)
-        checked = validate_event(event, f"!{room}")  # v12 room IDs are "!" + hash
+    for checked, err in check_events(source, base):
+        if err:
+            sys.exit(f"{path}: {err}")
         eid = checked["event_id"]
         if eid in base:
             sys.exit(f"{path}: delta event {eid} already exists in base")
         previous = events.get(eid)
-        if previous is not None and not equivalent_events(previous, checked):
-            sys.exit(f"{path}: conflicting copies of event {eid}")
-        if previous is None or (
-            content_hash_valid(checked) and not content_hash_valid(previous)
-        ):
+        if previous is None or (full_content(checked) and not full_content(previous)):
             events[eid] = checked
     body = b"".join(
         canon(e) + b"\n" for e in sorted(source, key=lambda e: e["event_id"])
@@ -291,14 +262,10 @@ def claim_agrees(claim, room, path, base, base_name):
 
 
 def add_to_pool(pool, events):
-    """Add EVENTS to POOL, rejecting conflicts and preferring valid content."""
+    """Add EVENTS to POOL, preferring a copy whose content is hash-covered."""
     for eid, event in events.items():
         previous = pool.get(eid)
-        if previous is not None and not equivalent_events(previous, event):
-            sys.exit(f"conflicting delta copies of event {eid}")
-        if previous is None or (
-            content_hash_valid(event) and not content_hash_valid(previous)
-        ):
+        if previous is None or (full_content(event) and not full_content(previous)):
             pool[eid] = event
 
 
@@ -311,21 +278,17 @@ def load_deltas(directory, room, base, paths=None, base_name=None):
             sys.exit(f"{path}: no matching claim file")
         if not claim_agrees(read_json(claim_path), room, path, base, base_name):
             sys.exit(f"{claim_path}: metadata does not match its delta or base")
-        add_to_pool(pool, load_delta(path, room, base))
+        add_to_pool(pool, load_delta(path, base))
     return pool
 
 
 def combine_pools(*pools):
-    """Combine event pools without allowing one copy to silently override another."""
+    """Combine event pools, preferring a copy whose content is hash-covered."""
     combined = {}
     for pool in pools:
         for eid, event in pool.items():
             previous = combined.get(eid)
-            if previous is not None and not equivalent_events(previous, event):
-                sys.exit(f"conflicting copies of event {eid}")
-            if previous is None or (
-                content_hash_valid(event) and not content_hash_valid(previous)
-            ):
+            if previous is None or (full_content(event) and not full_content(previous)):
                 combined[eid] = event
     return combined
 
@@ -571,26 +534,22 @@ def parse_submission(path, base):
     PATH is per-line base64 (*.jsonl.b64); plain JSONL is accepted for local use.
     """
     sub, errs = {}, []
-    room = next(e["room_id"] for e in base.values() if "room_id" in e)
+    parsed = []  # (line number, event)
     try:
         for n, line in enumerate(iter_lines(path), 1):
             try:
-                e = orjson.loads(line)
+                parsed.append((n, orjson.loads(line)))
             except orjson.JSONDecodeError:
                 errs.append(f"line {n}: invalid JSON")
-                continue
-            try:
-                checked = validate_event(e, room)
-            except SystemExit as exc:
-                errs.append(f"line {n}: {exc}")
-                continue
-            eid = checked["event_id"]
-            if eid in base and not equivalent_events(base[eid], checked):
-                errs.append(f"line {n}: {eid} conflicts with base")
-            else:
-                sub[eid] = checked
     except ValueError as exc:  # bad base64
         errs.append(f"invalid base64: {exc}")
+        return sub, errs
+    results = check_events([e for _, e in parsed], base)
+    for (n, _), (checked, err) in zip(parsed, results):
+        if err:
+            errs.append(f"line {n}: {err}")
+        else:
+            sub[checked["event_id"]] = checked
     return sub, errs
 
 
@@ -766,7 +725,7 @@ def cmd_merge(args):
     table = trusted_table(args, room, base_name, base)
     check_claim_delta(claim, table, base_name)
     tg = {x["event_id"]: x for x in table["targets"]}
-    current = load_delta(claim["delta"], room, base)
+    current = load_delta(claim["delta"], base)
     for path in args.prior_delta or []:
         if not re.fullmatch(DELTA_PATH.format(room=room), path):
             sys.exit(f"bad prior delta path {path!r}")
