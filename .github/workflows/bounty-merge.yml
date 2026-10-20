@@ -80,30 +80,40 @@ jobs:
                 prior_args+=(--prior-delta "$prior_delta")
               done < "$prior_file"
             fi
+            trusted_targets="$RUNNER_TEMP/targets-$room.csv"
+            if ! git show "$PUSH_BEFORE:$room/targets.csv" > "$trusted_targets"; then
+              echo "$claim: no published target table before this push" \
+                | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              blocked_rooms[$room]=1
+              continue
+            fi
             if ! prs=$(gh api "repos/$REPOSITORY/commits/$added_at/pulls"); then
               echo "$claim: could not resolve PR for $added_at" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
               blocked_rooms[$room]=1
               continue
             fi
-            pr=$(printf '%s' "$prs" | jq -r \
-              '[.[] | select(.base.ref == "master")][0].number // empty')
-            if [[ -z "$pr" ]]; then
-              echo "$claim: no associated master PR for addition commit $added_at" \
+            if ! pr=$(printf '%s' "$prs" | jq -er \
+              'if type != "array" then error("expected an array") else ([.[] | select(.base.ref == "master")][0].number // "__NONE__") | tostring end'); then
+              echo "$claim: could not parse PR attribution response for $added_at" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
               blocked_rooms[$room]=1
+              continue
+            fi
+            if [[ "$pr" == "__NONE__" ]]; then
+              if python3 -I scripts/bounty.py merge "$claim" --no-awards \
+                --trusted-targets "$trusted_targets" "${prior_args[@]}"; then
+                printf '%s\n' "$delta" >> "$prior_file"
+                echo "$claim: verified delta has no associated master PR; skipping prizes"
+              else
+                echo "$claim: claim validation failed without PR attribution" \
+                  | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              fi
               continue
             fi
             if ! who=$(gh pr view "$pr" --repo "$REPOSITORY" \
               --json author --jq .author.login); then
               echo "$claim: could not resolve claimant for PR #$pr" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              blocked_rooms[$room]=1
-              continue
-            fi
-            trusted_targets="$RUNNER_TEMP/targets-$room.csv"
-            if ! git show "$PUSH_BEFORE:$room/targets.csv" > "$trusted_targets"; then
-              echo "$claim: no published target table before this push" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
               blocked_rooms[$room]=1
               continue

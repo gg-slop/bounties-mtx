@@ -50,6 +50,14 @@ def unpaid_rows(room, overrides):
 
 def cmd_payout(args):
     """Print the unsigned payout transaction for a room's unpaid prizes."""
+    if not ROOM.fullmatch(args.room):
+        sys.exit(f"invalid room ID {args.room!r}")
+    pending_path = f"{args.room}/payout-pending.json"
+    if os.path.exists(pending_path) and not args.replace:
+        sys.exit(
+            f"pending payout already exists at {pending_path}; "
+            "use --replace only if the earlier batch was not broadcast"
+        )
     overrides = dict(x.split("=", 1) for x in args.address)
     by_address, noaddr = unpaid_rows(args.room, overrides)
     pay, carry, included = {}, [], []
@@ -82,10 +90,7 @@ def cmd_payout(args):
     cmd += [f"outputs={outputs}", f"options={orjson.dumps(options).decode()}"]
     print(f"# {len(pay)} outputs, {sum(pay.values())} sats (+ network fee)")
     print(" ".join(f"'{c}'" if " " in c or "[" in c or "{" in c else c for c in cmd))
-    write_json(
-        f"{args.room}/payout-pending.json",
-        {"outputs": pay, "rows": included},
-    )
+    write_json(pending_path, {"outputs": pay, "rows": included})
     if args.run:
         res = orjson.loads(subprocess.run(cmd, check=True, capture_output=True).stdout)
         print(f"# unsigned PSBT, fee {res['fee']} BTC")

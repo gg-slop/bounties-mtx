@@ -8,7 +8,8 @@
   bounty.py merge   CLAIM --claimant NAME [--pr N]
                                             -> re-verifies, appends
                                                ROOM/ledger.jsonl
-  bounty.py payout  ROOM [--min SATS] [--fee-rate N] [--change ADDR] [--run]
+  bounty.py payout  ROOM [--min SATS] [--fee-rate N] [--change ADDR]
+                                            [--replace] [--run]
                                             -> prints the unsigned payout txn
   bounty.py paid    ROOM TXID              -> records a completed payout
   bounty.py encode [FILE...] [--lines N]  -> stem.NN.jsonl.b64 (50K lines each)
@@ -772,7 +773,12 @@ def cmd_merge(args):
         paths=args.prior_delta or [],
         base_name=base_name,
     )
-    append_awards(args, claim, tg, newly_closed(base, prior, current, tg))
+    closed = newly_closed(base, prior, current, tg)
+    if args.no_awards:
+        return
+    if not args.claimant:
+        sys.exit("--claimant is required unless --no-awards is set")
+    append_awards(args, claim, tg, closed)
 
 
 def write_parts(stem, lines, size):
@@ -862,7 +868,12 @@ def main():
     s = sp.add_parser("merge")
     s.add_argument("claim")
     s.add_argument("--pr")
-    s.add_argument("--claimant", required=True)
+    s.add_argument("--claimant")
+    s.add_argument(
+        "--no-awards",
+        action="store_true",
+        help="validate and load a claim delta without recording prizes",
+    )
     s.add_argument("--base")
     s.add_argument("--trusted-targets")
     s.add_argument(
@@ -878,6 +889,11 @@ def main():
     s.add_argument("--fee-rate", type=int, default=5, help="sat/vB")
     s.add_argument("--change")
     s.add_argument("--address", action="append", default=[], metavar="WHO=ADDR")
+    s.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace an unbroadcast pending payout batch",
+    )
     s.add_argument("--run", action="store_true", help="ask bitcoin-cli for the PSBT")
     s.set_defaults(f=_payout.cmd_payout)
     s = sp.add_parser("paid")

@@ -15,9 +15,9 @@ contribute additional targets. The fixed table was generated with
    room ID of the bounty you are targeting
    (`scripts/bounty.py encode <ROOM>/submissions/<you>.jsonl`, then commit only
    the `.b64`; plain `.jsonl` is git-ignored and must never be committed). One
-   file per claim. Open a PR. The directory selects the bounty and its base DAG
-   (`res/<ROOM>/merged-<ROOM>-*`, deepest wins). To pin a specific base, add
-   `<ROOM>/submissions/manifest.json` with `{"base": "merged-<ROOM>-…"}`.
+   file per claim. Open a PR. The directory selects the bounty, and its
+   published `targets.csv` selects the authoritative base DAG. A submission
+   manifest may provide a payout address but cannot select a different base.
 2. CI verifies every event's ID equals its room-v12 reference hash (no trust
    needed), rejects conflicts with the base, and writes
    `<ROOM>/deltas/<digest>.delta.jsonl.b64` (only events absent from base, also
@@ -63,6 +63,8 @@ targets.
   unpaid prizes by address, then applies the minimum, and prints the unsigned
   `bitcoin-cli walletcreatefundedpsbt` command; add `--run` to have your own
   node return the PSBT. After broadcasting, run
-  `scripts/bounty.py paid <ROOM> <TXID>` to mark the rows in that payout paid.
-  Nothing is signed or broadcast by this repo. Address totals under `--min`
-  carry over (on-chain outputs below ~300–550 sats are dust).
+  `scripts/bounty.py paid <ROOM> <TXID>` to mark the rows in that payout paid. A
+  pending batch must be recorded as paid before creating another; use
+  `--replace` only to discard a batch that was not broadcast. Nothing is signed
+  or broadcast by this repo. Address totals under `--min` carry over (on-chain
+  outputs below ~300–550 sats are dust).
