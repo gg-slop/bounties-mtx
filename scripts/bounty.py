@@ -18,9 +18,9 @@
 
 ROOM is the 43-char room ID. The bounty a claim targets comes from where it
 lives: ROOM/submissions/x.jsonl.b64 (build) or ROOM/deltas/x.claim.json (merge).
-The base DAG is selected by ROOM/targets.csv; an optional
-ROOM/submissions/manifest.json {"base": "merged-ROOM-..."} or --base can pin
-one explicitly.
+The base DAG is the deepest matching merged DAG under res/ROOM. An optional
+ROOM/submissions/manifest.json {"base": "merged-ROOM-..."} or --base may name
+it explicitly.
 
 Stored DAGs are per-line base64, in line-aligned parts. Any command that loads
 a DAG accepts FILE or, if FILE is absent, its .b64 parts (or a single FILE.b64).
@@ -33,15 +33,16 @@ The other commands (targets, payout, paid, encode, decode) do not load it. rezzy
 owns every room-version rule (reference hash, redaction, content hash); this
 script only checks the results.
 
-A target is a deduplicated prev_events/auth_events ID referenced by BASE but
-absent from it. Event IDs are the room version's reference hashes, which the
-base's own m.room.create declares. Submitted content is kept only when its
-content hash validates; otherwise it is redacted.
-A target is *closed* when it and every prev_events/auth_events link of its
-ancestors resolve into the accumulated event pool. Targets are only the initial
-missing IDs: closing one means following every link, recursively,
-down to events in BASE. Newly revealed ancestor gaps are not added as targets;
-if an ancestor is also an initial target, it remains eligible under its own
+A target is a deduplicated prev_events/auth_events ID or m.relates_to event ID
+referenced by BASE but absent from it. Event IDs are the room version's
+reference hashes, which the base's own m.room.create declares. Submitted
+content is kept only when its content hash validates; otherwise it is redacted.
+A target is *closed* when it and every prev_events, auth_events, and
+m.relates_to link of its recursively referenced events resolve into the
+accumulated event pool. Targets are
+only the initial missing IDs: closing one means following every link,
+recursively, down to events in BASE. Newly revealed gaps are not added as
+targets; if a gap is also an initial target, it remains eligible under its own
 row.
 """
 
@@ -163,7 +164,7 @@ def rezzy_events(lines, room_version):
     if not os.path.isabs(path) or not os.path.isfile(path):
         sys.exit(
             "set REZZY_LIB to the absolute path of librezzy_ffi "
-            "(see BOUNTY.md, Running the tools locally)"
+            "(see README.md, Running the tools locally)"
         )
     lib = ctypes.CDLL(path)
     lib.rezzy_hash_events.argtypes = [
@@ -383,35 +384,34 @@ def submission_base(path, override=None):
     return room, table.get("base") or find_base(room)
 
 
-TABLE_COLS = ("rank", "event_id", "refs", "min_child_depth", "prize_sats")
-TABLE_INTS = ("budget_sats", "count")
+TABLE_COLS = ("event_id", "n_refs", "min_child_depth", "prize_sats")
 
 
 def write_table(path, table):
-    """Write the target table as CSV, its metadata as leading '# key: value' lines."""
+    """Write the four-column target CSV."""
     with open(path, "w", encoding="utf-8", newline="") as f:
-        for key, value in table.items():
-            if key != "targets":
-                f.write(f"# {key}: {value}\n")
         out = csv.DictWriter(f, fieldnames=TABLE_COLS, lineterminator="\n")
         out.writeheader()
         out.writerows(table["targets"])
 
 
-def read_table(path):
-    """Read a table written by write_table back into the original dict shape."""
+def read_table(path, room=None):
+    """Read the four-column target CSV and resolve the room's base DAG."""
     with open(path, encoding="utf-8", newline="") as f:
-        lines = f.read().splitlines()
-    meta = {}
-    for line in lines:
-        if line.startswith("# "):
-            key, _, value = line[2:].partition(": ")
-            meta[key] = int(value) if key in TABLE_INTS else value
+        records = list(csv.reader(f))
+    if not records or tuple(records[0]) != TABLE_COLS:
+        sys.exit(f"{path}: invalid target table header")
+    if any(len(record) != len(TABLE_COLS) for record in records[1:]):
+        sys.exit(f"{path}: target rows must have {len(TABLE_COLS)} columns")
     rows = [
-        {c: (r[c] if c == "event_id" else int(r[c])) for c in TABLE_COLS}
-        for r in csv.DictReader(x for x in lines if not x.startswith("#"))
+        {
+            c: (record[i] if c == "event_id" else int(record[i]))
+            for i, c in enumerate(TABLE_COLS)
+        }
+        for record in records[1:]
     ]
-    return {**meta, "targets": rows}
+    room = room or os.path.basename(os.path.dirname(path))
+    return {"base": find_base(room), "targets": rows}
 
 
 def targets_file(room):
@@ -422,15 +422,28 @@ def targets_file(room):
     return path
 
 
+def relation_ids(e):
+    """Event IDs named by content["m.relates_to"] (relation target, reply)."""
+    rel = (e.get("content") or {}).get("m.relates_to")
+    if not isinstance(rel, dict):
+        return []
+    reply = rel.get("m.in_reply_to")
+    ids = [rel.get("event_id")]
+    if isinstance(reply, dict):
+        ids.append(reply.get("event_id"))
+    return [i for i in dict.fromkeys(ids) if isinstance(i, str) and i.startswith("$")]
+
+
 def links(e):
-    """All event IDs an event depends on (prev_events then auth_events)."""
-    return list(e.get("prev_events", [])) + list(e.get("auth_events", []))
+    """All event IDs an event depends on: prev_events, auth_events, relations."""
+    dag = list(e.get("prev_events", [])) + list(e.get("auth_events", []))
+    return dag + relation_ids(e)
 
 
 def rank_targets(base):
     """Missing IDs, hardest-looking first: fewest references, then oldest.
 
-    refs is how many base events point at the target (few means few servers
+    n_refs is how many base events reference the target (few means few servers
     are likely to have seen it); min_child_depth is the shallowest depth among
     those referencing events (smaller means older history). Both are
     recomputable from the base DAG.
@@ -441,18 +454,18 @@ def rank_targets(base):
             if p not in base:
                 seen.setdefault(p, {})[e["event_id"]] = e["depth"]
     rows = [
-        {"event_id": t, "refs": len(d), "min_child_depth": min(d.values())}
+        {"event_id": t, "n_refs": len(d), "min_child_depth": min(d.values())}
         for t, d in seen.items()
     ]
-    rows.sort(key=lambda r: (r["refs"], r["min_child_depth"], r["event_id"]))
+    rows.sort(key=lambda r: (r["n_refs"], r["min_child_depth"], r["event_id"]))
     return rows
 
 
-def prizes(n, budget, alpha=0.25):
+def prizes(n, budget, alpha=0):
     """Rank k of n gets budget * k**-alpha / sum(j**-alpha), in whole sats.
 
-    A mild power law (about 7:1 top to bottom at n=2163, alpha=0.25). Largest-
-    remainder rounding keeps the total exactly equal to budget.
+    The default alpha=0 splits the budget uniformly. Largest-remainder rounding
+    keeps the total exactly equal to budget.
     """
     w = [k**-alpha for k in range(1, n + 1)]
     total = sum(w)
@@ -511,46 +524,49 @@ def base_fingerprint(base):
 
 
 def check_published_base(room, base_name, base, table):
-    """Require claims to use the exact DAG used to publish the target table."""
-    expected = table.get("base_sha256")
-    if not expected or table.get("base") != base_name:
-        sys.exit(f"claim must use the published base {table.get('base')!r}")
-    if base_fingerprint(base) != expected:
-        sys.exit(f"base DAG fingerprint does not match published bounty for {room}")
+    """Require the target descriptors to match the room's selected base."""
+    expected_base = find_base(room)
+    if expected_base != base_name or table.get("base") != base_name:
+        sys.exit(f"claim must use the room base {expected_base!r}")
+    expected = rank_targets(base)
+    actual = [
+        {key: row[key] for key in ("event_id", "n_refs", "min_child_depth")}
+        for row in table["targets"]
+    ]
+    if actual != expected:
+        sys.exit(f"{targets_file(room)} does not match the selected base DAG")
+    table["base_sha256"] = base_fingerprint(base)
 
 
 def cmd_targets(args):
     """Write ROOM/targets.csv with ranks and prizes."""
-    base_name = args.base or find_base(args.room)
+    base_name = find_base(args.room)
+    if args.base and args.base != base_name:
+        sys.exit(f"--base must name the room's selected base {base_name!r}")
     base = load(base_name)
     rows = rank_targets(base)
     p = prizes(len(rows), args.budget)
     path = f"{args.room}/targets.csv"
-    target_rows = [{"rank": i + 1, **r, "prize_sats": p[i]} for i, r in enumerate(rows)]
-    published = {
-        "budget_sats": args.budget,
-        "count": len(rows),
-        "weight": "rank**-0.25",
-        "order": "refs asc, min_child_depth asc, event_id asc",
-        "targets": target_rows,
-    }
+    target_rows = [{**r, "prize_sats": p[i]} for i, r in enumerate(rows)]
+    published = {"targets": target_rows}
     if os.path.exists(path):
         existing = read_table(path)
-        if any(existing.get(k) != v for k, v in published.items()):
-            sys.exit(f"{path} is already published; refusing to change ranks or prizes")
-        fingerprint = base_fingerprint(base)
-        if existing.get("base") not in (None, base_name):
-            sys.exit(f"{path} is already tied to base {existing['base']!r}")
-        if existing.get("base_sha256") not in (None, fingerprint):
-            sys.exit(f"{path} is already tied to a different base DAG")
-        existing["base"] = base_name
-        existing["base_sha256"] = fingerprint
+        differs = (
+            existing["targets"] != target_rows
+            or sum(row["prize_sats"] for row in existing["targets"]) != args.budget
+        )
+        if differs:
+            if not args.regenerate:
+                sys.exit(
+                    f"{path} is already published; refusing to change ranks or prizes"
+                )
+            write_table(path, published)
+            print(f"regenerated target table for {base_name}")
+            return
         write_table(path, existing)
-        print(f"published table metadata verified for {base_name}")
+        print(f"target table verified for {base_name}")
         return
     os.makedirs(args.room, exist_ok=True)
-    published["base"] = base_name
-    published["base_sha256"] = base_fingerprint(base)
     write_table(path, published)
     if p:
         print(
@@ -716,7 +732,7 @@ def claim_base_name(args, room, claim):
 
 def trusted_table(args, room, base_name, base):
     """The published target table, checked against the base and the claim push."""
-    table = read_table(args.trusted_targets or targets_file(room))
+    table = read_table(args.trusted_targets or targets_file(room), room)
     if args.trusted_targets and table != read_table(targets_file(room)):
         sys.exit(f"{targets_file(room)} changed in the claim push")
     check_published_base(room, base_name, base, table)
@@ -849,6 +865,7 @@ def main():
     s.add_argument("room")
     s.add_argument("--budget", type=int, default=20000)
     s.add_argument("--base")
+    s.add_argument("--regenerate", action="store_true")
     s.set_defaults(f=cmd_targets)
     s = sp.add_parser("build")
     s.add_argument("submission")

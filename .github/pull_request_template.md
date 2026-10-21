@@ -5,7 +5,7 @@ Room ID: `<ROOM>`
 <!-- Replace <ROOM> with the 43-character folder name,
 e.g. `L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI` -->
 
-How to claim, what CI does, closure and payout rules: that folder's `BOUNTY.md`.
+How to claim, what CI does, closure and payout rules: that folder's `README.md`.
 
 ## Checklist
 
