@@ -14,8 +14,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 # pylint: disable-next=wrong-import-position,import-error
 import bounty_award as rc  # noqa: E402
+import bounty_payout  # noqa: E402
 
 ROOM = "A" * 43
+ADDR_A = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+ADDR_B = "bc1qw508d6qejxtdg4y5r2zarvary0c5xw7kv8f3t4"
 OTHER = "B" * 43
 FAIL = subprocess.CalledProcessError(1, "x")
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -379,6 +382,12 @@ class PublishTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
         self.addCleanup(self.tmp.cleanup)
+        for patcher in (
+            patch.object(rc, "_payout_module", return_value=bounty_payout),
+            patch.dict(bounty_payout.ROOM_NETWORKS, {ROOM: "main"}),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.root = os.path.join(self.tmp.name, "repo")
         self.src = os.path.join(self.tmp.name, "staged")
         os.makedirs(os.path.join(self.root, ROOM))
@@ -397,7 +406,7 @@ class PublishTest(unittest.TestCase):
                     "pr": {
                         "number": "1",
                         "author": "a",
-                        "body": "Payout: bc1q" + "a" * 26,
+                        "body": f"Payout: {ADDR_A}",
                     },
                 }
             },
@@ -415,7 +424,7 @@ class PublishTest(unittest.TestCase):
         row = {
             "target": target,
             "claimant": "a",
-            "address": "bc1q" + "a" * 26,
+            "address": ADDR_A,
             "pr": "1",
             "delta": f"{ROOM}/deltas/aa.delta.jsonl.b64",
             "prize_sats": 3,
@@ -451,7 +460,7 @@ class PublishTest(unittest.TestCase):
         self.resolved["claims"] = {
             rc.claim_key(commit(1), claim): {
                 "error": None,
-                "pr": {"number": "1", "author": "a", "body": "Payout: bc1q" + "a" * 26},
+                "pr": {"number": "1", "author": "a", "body": f"Payout: {ADDR_A}"},
             }
         }
         self.stage(self.row("$1"))
@@ -475,7 +484,7 @@ class PublishTest(unittest.TestCase):
             "pr": {
                 "number": "2",
                 "author": "b",
-                "body": "Payout: bc1q" + "b" * 26,
+                "body": f"Payout: {ADDR_B}",
             },
         }
         self.stage(self.row("$1", delta=other_delta))
@@ -489,7 +498,7 @@ class PublishTest(unittest.TestCase):
                 delta=other_delta,
                 pr="2",
                 claimant="b",
-                address="bc1q" + "b" * 26,
+                address=ADDR_B,
             )
         )
         with self.assertRaises(SystemExit):
@@ -530,7 +539,7 @@ class PublishTest(unittest.TestCase):
     def test_delta_must_belong_to_the_pr_that_merged_its_claim(self):
         bad = claim_path(ROOM, "bb")
         self.resolved["history"].append([commit(2), bad])
-        other = {"number": "2", "author": "a", "body": "Payout: bc1q" + "a" * 26}
+        other = {"number": "2", "author": "a", "body": f"Payout: {ADDR_A}"}
         self.resolved["claims"][rc.claim_key(commit(2), bad)] = {
             "error": None,
             "pr": other,

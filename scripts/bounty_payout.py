@@ -6,7 +6,10 @@ import re
 import shlex
 import sys
 
-import orjson
+try:
+    import orjson
+except ImportError:  # address helpers need only the stdlib (publish job)
+    orjson = None
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
 BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"

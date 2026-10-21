@@ -16,6 +16,8 @@ import argparse
 import base64
 import binascii
 import csv
+import functools
+import importlib.util
 import json
 import os
 import re
@@ -32,6 +34,19 @@ LEDGER_KEYS = {"target", "claimant", "address", "pr", "delta", "prize_sats", "st
 MAX_ERROR_LINES = 1000
 MAX_ERROR_BYTES = 1 << 20
 PROCESSED_PATH = "bounty-processed.json"
+PAYOUT_LINE = re.compile(r"(?im)^[ \t]*payout(?: address)?[ \t]*:[ \t]*(\S+)[ \t\r]*$")
+
+
+@functools.cache
+def _payout_module():
+    """Load the sibling bounty_payout, whose address checks replay also uses."""
+    spec = importlib.util.spec_from_file_location(
+        "bounty_payout", os.path.join(HERE, "bounty_payout.py")
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def parse_claim_history(text):
@@ -376,7 +391,8 @@ class Awarder:
         """Merge one resolved CLAIM and record its delta for later claims."""
         if self.src.merge(self.merge_args(claim, room, pr)):
             self.prior.setdefault(room, []).append(delta)
-            self.completed.append({"claim": claim, "delta": delta})
+            if all(done["claim"] != claim for done in self.completed):
+                self.completed.append({"claim": claim, "delta": delta})
             if pr is None:
                 self.log(f"{claim}: verified delta has no master PR; skipping prizes")
         elif pr is None:
@@ -446,7 +462,7 @@ def trusted_claims(resolved):
     return prs, deltas
 
 
-def row_problem(row, prizes, prs, deltas):
+def row_problem(room, row, prizes, prs, deltas):
     """Why ROW is not a legitimate new award, or None."""
     if not (isinstance(row, dict) and set(row) == LEDGER_KEYS):
         return "unexpected fields"
@@ -470,17 +486,13 @@ def row_problem(row, prizes, prs, deltas):
     ):
         return "non-string field"
     pr = prs.get(pr_number)
-    payout_lines = re.findall(
-        r"(?im)^[ \t]*payout(?: address)?[ \t]*:[ \t]*(\S+)[ \t\r]*$",
-        pr["body"] if pr else "",
-    )
+    payout_lines = PAYOUT_LINE.findall(pr["body"] if pr else "")
+    payout = _payout_module()
+    network = payout.room_network(room)
     addresses = {
-        value.lower() if value.lower().startswith(("bc1", "tb1", "bcrt1")) else value
+        payout.normalize_address(value)
         for value in payout_lines
-        if re.fullmatch(
-            r"(?:bc1|tb1|bcrt1)[a-zA-Z0-9]{20,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34}",
-            value,
-        )
+        if payout.valid_payout_address(value, network)
     }
     expected_address = next(iter(addresses)) if len(addresses) == 1 else None
     checks = (
@@ -510,7 +522,7 @@ def check_new_rows(room, tail, old, trusted):
             row = json.loads(line)
         except ValueError:
             sys.exit(f"{room}/ledger.jsonl: appended row is not JSON")
-        problem = row_problem(row, *trusted)
+        problem = row_problem(room, row, *trusted)
         if problem is None and not row["delta"].startswith(f"{room}/deltas/"):
             problem = "delta belongs to a different room"
         if problem is None and row["target"] in seen:

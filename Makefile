@@ -8,6 +8,7 @@ MAKEFLAGS += --no-print-directory
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .PHONY: all
+.NOTPARALLEL: all
 all:	##H Run all main targets
 all: format lint test
 
