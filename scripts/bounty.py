@@ -731,14 +731,14 @@ def payout_from_body(path, network="main"):
     """
     with open(path, encoding="utf-8", errors="replace") as f:
         found = {
-            x
+            _payout.normalize_address(x)
             for x in PAYOUT_LINE.findall(f.read())
             if _payout.valid_payout_address(x, network)
         }
     if len(found) != 1:
         print("no single valid 'Payout: <address>' line in the PR description")
         return None
-    return _payout.normalize_address(found.pop())
+    return found.pop()
 
 
 def verified_submission(path, base):
