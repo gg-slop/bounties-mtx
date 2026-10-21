@@ -41,12 +41,12 @@ jobs:
           gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
             --paginate --jq '.[] | select(.status != "removed") | .filename | tojson' \
             > "$RUNNER_TEMP/changed.txt"
-          name='[A-Za-z0-9_-]+(\.[0-9]{2,})?\.jsonl\.b64'
+          name='([A-Za-z0-9_@+=-]+|([A-Za-z0-9_@+=-]+\.)+[A-Za-z0-9_@+=-]*[A-Za-z_@+=-][A-Za-z0-9_@+=-]*)(\.[0-9]{2,})?\.jsonl\.b64'
           grep -E "^\"[A-Za-z0-9_-]{43}/submissions/$name\"\$" \
             "$RUNNER_TEMP/changed.txt" | tr -d '"' > "$RUNNER_TEMP/submitted.txt" || true
           if grep -E 'submissions/.*jsonl\.b64"$' "$RUNNER_TEMP/changed.txt" |
               grep -vE "^\"[A-Za-z0-9_-]{43}/submissions/$name\"\$"; then
-            echo "submission file names may only use letters, digits, '-' and '_'" >&2
+            echo "invalid submission file name (see the room README)" >&2
             exit 1
           fi
           sort -u "$RUNNER_TEMP/submitted.txt" -o "$RUNNER_TEMP/submitted.txt"
@@ -155,12 +155,12 @@ jobs:
           gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
             --paginate --jq '.[] | select(.status != "removed") | .filename | tojson' \
             > "$RUNNER_TEMP/changed.txt"
-          name='[A-Za-z0-9_-]+(\.[0-9]{2,})?\.jsonl\.b64'
+          name='([A-Za-z0-9_@+=-]+|([A-Za-z0-9_@+=-]+\.)+[A-Za-z0-9_@+=-]*[A-Za-z_@+=-][A-Za-z0-9_@+=-]*)(\.[0-9]{2,})?\.jsonl\.b64'
           grep -E "^\"[A-Za-z0-9_-]{43}/submissions/$name\"\$" \
             "$RUNNER_TEMP/changed.txt" | tr -d '"' > "$RUNNER_TEMP/submitted.txt" || true
           if grep -E 'submissions/.*jsonl\.b64"$' "$RUNNER_TEMP/changed.txt" |
               grep -vE "^\"[A-Za-z0-9_-]{43}/submissions/$name\"\$"; then
-            echo "submission file names may only use letters, digits, '-' and '_'" >&2
+            echo "invalid submission file name (see the room README)" >&2
             exit 1
           fi
           # -V orders numbered parts numerically (.11 before .100).

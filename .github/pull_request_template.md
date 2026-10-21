@@ -10,10 +10,9 @@ Payout: bc1q…
 - [ ] Only your submission in `<ROOM>/submissions/` changed:
       `<username>.00.jsonl.b64` (more `.NN` parts only if it exceeds 50,000
       lines)
-- [ ] `<username>` uses only letters, digits, `-` and `_`, and is unique: your
-      GitHub username, or a filename-safe alias of your Matrix localpart
-      (replace any other character, such as `.`, with `_`). Add `-2` for a later
-      claim
-- [ ] No plaintext `.jsonl` committed
+- [ ] `<username>` is unique and a valid file name: your GitHub username, or
+      your Matrix ID with `:` changed to `+` (`@alice:matrix.org` becomes
+      `@alice+matrix.org`). A later claim adds `-2` (`alice-2.00.jsonl.b64`)
+- [ ] No plaintext `.jsonl` committed (only base-64 encoded)
 - [ ] The `Payout:` line above has your Bitcoin address (no address, no payout)
 - [ ] Events are for this room only; anything unresolvable has evidence attached

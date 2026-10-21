@@ -340,7 +340,13 @@ def combine_pools(*pools):
 
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
-SUBMISSION_NAME = re.compile(r"[A-Za-z0-9_-]+(\.[0-9]{2,})?\.jsonl(\.b64)?")
+# A name is dot-separated parts of [A-Za-z0-9_@+=-]; if it has a dot, its last
+# part must contain a non-digit, so a trailing ".NN" can only be a part number.
+_NAME_PART = r"[A-Za-z0-9_@+=-]+"
+_NAME_LAST = r"[A-Za-z0-9_@+=-]*[A-Za-z_@+=-][A-Za-z0-9_@+=-]*"
+SUBMISSION_NAME = re.compile(
+    rf"(?:{_NAME_PART}|(?:{_NAME_PART}\.)+{_NAME_LAST})(\.[0-9]{{2,}})?\.jsonl(\.b64)?"
+)
 
 
 def room_of(path):
@@ -751,7 +757,7 @@ def cmd_build(args):
     """Validate a submission and write its delta and claim files."""
     name = os.path.basename(args.submission)
     if not SUBMISSION_NAME.fullmatch(name):
-        sys.exit(f"{name}: use only letters, digits, '-' and '_' in submission names")
+        sys.exit(f"{name}: not a valid submission name (see the room README)")
     room, base_name = submission_base(args.submission, args.base)
     base = load(base_name)
     table = read_table(targets_file(room))
