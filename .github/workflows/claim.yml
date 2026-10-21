@@ -1,4 +1,5 @@
-name: claim
+---
+name: "DAG Claim"
 on:
   pull_request:
     paths: ["rooms/*/submissions/*.jsonl.b64"]

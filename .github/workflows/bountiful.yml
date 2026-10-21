@@ -1,5 +1,5 @@
 ---
-name: "DAG Hunt"
+name: "DAG Merge"
 # Three jobs, three trust levels. Data moves between them only as artifacts.
 #   resolve  credentials to read PRs; runs no rezzy and builds nothing
 #   replay   builds and runs rezzy; no credentials of any kind
