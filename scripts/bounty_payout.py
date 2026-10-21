@@ -7,7 +7,6 @@ import re
 import shlex
 import sys
 
-
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
 
 
