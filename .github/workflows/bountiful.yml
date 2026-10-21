@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           # Runs in this concurrency group may have queued behind a prior
-          # ledger push. Start from the current branch so reconciliation sees it.
+          # ledger push. Start from the current branch so the award run sees it.
           ref: master
           fetch-depth: 0
           # The rezzy build below runs third-party build scripts: keep the
@@ -47,124 +47,16 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
           (cd rezzy && RUSTUP_TOOLCHAIN=1.88.0 cargo build --release --locked -p rezzy-ffi)
           echo "REZZY_LIB=$GITHUB_WORKSPACE/rezzy/target/release/librezzy_ffi.so" >> "$GITHUB_ENV"
-      - name: Reconcile claims in merge order
+      - name: Award claims in merge order
         env:
           GH_TOKEN: ${{ github.token }}
           PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_SHA: ${{ github.sha }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           git fetch origin "$PUSH_BEFORE"
-          # Keep the full push range for audit and recover every claim on master
-          # so an older canceled/pending run is reconciled by the next run.
-          git diff --name-only --diff-filter=A "$PUSH_BEFORE" "$PUSH_SHA" \
-            -- '*/deltas/*.claim.json' > "$RUNNER_TEMP/pushed-claims.txt"
-          git log --first-parent --reverse --diff-filter=A \
-            --format='COMMIT%x09%H' --name-only -- '*/deltas/*.claim.json' |
-            awk -F '\t' '
-              /^COMMIT\t/ { commit = $2; next }
-              /^[A-Za-z0-9_-]+\/deltas\/[0-9a-f]+\.claim\.json$/ {
-                print commit "\t" $0
-              }
-            ' > "$RUNNER_TEMP/claim-history.txt"
-          : > "$RUNNER_TEMP/claim-errors.txt"
-          declare -A blocked_rooms=()
-          while IFS=$'\t' read -r added_at claim; do
-            [[ -f "$claim" ]] || continue
-            room=${claim%%/*}
-            if [[ -n "${blocked_rooms[$room]+x}" ]]; then
-              echo "$claim: deferred because an earlier claim in $room could not be attributed" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              continue
-            fi
-            delta=${claim%.claim.json}.delta.jsonl.b64
-            claim_digest=${claim##*/}
-            claim_digest=${claim_digest%.claim.json}
-            if ! embedded_delta=$(jq -er '.delta | strings' "$claim") || \
-               ! embedded_digest=$(jq -er '.delta_sha256_16 | strings' "$claim"); then
-              echo "$claim: missing or invalid embedded delta path/digest" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              continue
-            fi
-            expected_delta="$room/deltas/$claim_digest.delta.jsonl.b64"
-            if [[ "$embedded_delta" != "$expected_delta" || \
-                  "$embedded_digest" != "$claim_digest" ]]; then
-              echo "$claim: embedded delta path/digest does not match its sibling" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              continue
-            fi
-            prior_file="$RUNNER_TEMP/prior-$room.txt"
-            prior_args=()
-            if [[ -f "$prior_file" ]]; then
-              while IFS= read -r prior_delta; do
-                prior_args+=(--prior-delta "$prior_delta")
-              done < "$prior_file"
-            fi
-            trusted_targets="$RUNNER_TEMP/targets-$room.csv"
-            if ! git show "$PUSH_BEFORE:$room/targets.csv" > "$trusted_targets"; then
-              echo "$claim: no published target table before this push" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              blocked_rooms[$room]=1
-              continue
-            fi
-            trusted_base_lock="$RUNNER_TEMP/base-lock-$room"
-            if ! git show "$PUSH_BEFORE:$room/base.lock" > "$trusted_base_lock"; then
-              echo "$claim: no published base lock before this push" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              blocked_rooms[$room]=1
-              continue
-            fi
-            if ! prs=$(gh api "repos/$REPOSITORY/commits/$added_at/pulls"); then
-              echo "$claim: could not resolve PR for $added_at" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              blocked_rooms[$room]=1
-              continue
-            fi
-            if ! pr=$(printf '%s' "$prs" | jq -er \
-              'if type != "array" then error("expected an array") else ([.[] | select(.base.ref == "master")][0].number // "__NONE__") | tostring end'); then
-              echo "$claim: could not parse PR attribution response for $added_at" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              blocked_rooms[$room]=1
-              continue
-            fi
-            if [[ "$pr" == "__NONE__" ]]; then
-              if env -u GH_TOKEN python3 -I scripts/bounty.py merge "$claim" --no-awards \
-                --trusted-targets "$trusted_targets" \
-                --trusted-base-lock "$trusted_base_lock" "${prior_args[@]}"; then
-                printf '%s\n' "$delta" >> "$prior_file"
-                echo "$claim: verified delta has no associated master PR; skipping prizes"
-              else
-                echo "$claim: claim validation failed without PR attribution" \
-                  | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              fi
-              continue
-            fi
-            if ! who=$(gh pr view "$pr" --repo "$REPOSITORY" \
-              --json author --jq .author.login); then
-              echo "$claim: could not resolve claimant for PR #$pr" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              blocked_rooms[$room]=1
-              continue
-            fi
-            body="$RUNNER_TEMP/pr-$pr-body.txt"
-            if ! gh pr view "$pr" --repo "$REPOSITORY" \
-              --json body --jq .body > "$body"; then
-              echo "$claim: could not read the description of PR #$pr" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-              blocked_rooms[$room]=1
-              continue
-            fi
-            if env -u GH_TOKEN python3 -I scripts/bounty.py merge "$claim" --pr "$pr" \
-              --claimant "$who" --pr-body "$body" \
-              --trusted-targets "$trusted_targets" \
-              --trusted-base-lock "$trusted_base_lock" "${prior_args[@]}"; then
-              printf '%s\n' "$delta" >> "$prior_file"
-            else
-              echo "$claim: merge validation failed" \
-                | tee -a "$RUNNER_TEMP/claim-errors.txt"
-            fi
-          done < "$RUNNER_TEMP/claim-history.txt"
+          python3 -I scripts/bounty.py award --before "$PUSH_BEFORE" \
+            --repo "$REPOSITORY" --errors "$RUNNER_TEMP/claim-errors.txt"
       - name: Commit and push ledger updates
         env:
           GH_TOKEN: ${{ github.token }}

@@ -18,6 +18,11 @@ format:	##H Format code
 	pre-commit run --all-files
 
 
+.PHONY: test
+test:	##H Run unit tests
+	python3 -m pytest -q tests
+
+
 .PHONY: lint
 lint:	##H Run python lints
 	markdownlint $$(git ls-files '*.md')
