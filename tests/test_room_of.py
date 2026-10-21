@@ -15,6 +15,8 @@ ROOM = "A" * 43
 
 
 class RoomOfTest(unittest.TestCase):
+    """Room path parsing accepts only the rooms/ROOM layout."""
+
     def test_accepts_nested_layout(self):
         for kind in ("submissions", "deltas"):
             path = f"rooms/{ROOM}/{kind}/x.jsonl.b64"
