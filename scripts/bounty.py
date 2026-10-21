@@ -382,9 +382,6 @@ def find_base(room, pinned=None):
     return max(found, key=depth)
 
 
-ADDR = re.compile(r"(?:bc1|tb1|bcrt1)[a-z0-9]{8,87}|[13mn2][a-km-zA-HJ-NP-Z1-9]{25,39}")
-
-
 def submission_base(path, override=None):
     """(room, base DAG path), respecting an explicit or the published selection."""
     room = room_of(path)
@@ -724,7 +721,7 @@ def payout_from_body(path):
     claim is still recorded, but nothing can be paid yet.
     """
     with open(path, encoding="utf-8", errors="replace") as f:
-        found = {x for x in PAYOUT_LINE.findall(f.read()) if ADDR.fullmatch(x)}
+        found = {x for x in PAYOUT_LINE.findall(f.read()) if _payout.valid_address(x)}
     if len(found) != 1:
         print("no single valid 'Payout: <address>' line in the PR description")
         return None

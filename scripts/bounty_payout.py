@@ -1,5 +1,6 @@
 """Payout commands for bounty ledgers."""
 
+import hashlib
 import os
 import re
 import shlex
@@ -8,7 +9,77 @@ import sys
 import orjson
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
-ADDR = re.compile(r"(?:bc1|tb1|bcrt1)[a-z0-9]{8,87}|[13mn2][a-km-zA-HJ-NP-Z1-9]{25,39}")
+BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+BECH32_GEN = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
+BASE58_VERSIONS = {0x00, 0x05, 0x6F, 0xC4}  # mainnet and testnet P2PKH / P2SH
+
+
+def bech32_polymod(values):
+    """BIP173 checksum accumulator over 5-bit VALUES."""
+    chk = 1
+    for value in values:
+        top = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ value
+        for i, gen in enumerate(BECH32_GEN):
+            chk ^= gen if (top >> i) & 1 else 0
+    return chk
+
+
+def valid_bech32(address):
+    """Whether ADDRESS is a checksum-correct bech32 (v0) or bech32m (v1+) address."""
+    if len(address) > 90 or (address.lower() != address and address.upper() != address):
+        return False
+    address = address.lower()
+    hrp, sep, data = address.rpartition("1")
+    if not sep or hrp not in ("bc", "tb", "bcrt") or len(data) < 7:
+        return False
+    if any(c not in BECH32 for c in data):
+        return False
+    values = [BECH32.index(c) for c in data]
+    hrp_values = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+    check = bech32_polymod(hrp_values + values)
+    version, program = values[0], values[1:-6]
+    if version > 16 or check != (1 if version == 0 else 0x2BC830A3):
+        return False
+    acc = bits = 0
+    out = []
+    for value in program:
+        acc = (acc << 5) | value
+        bits += 5
+        while bits >= 8:
+            bits -= 8
+            out.append((acc >> bits) & 0xFF)
+        acc &= (1 << bits) - 1
+    if bits >= 5 or acc:  # padding must be under five bits, all zero
+        return False
+    if version == 0:
+        return len(out) in (20, 32)
+    return 2 <= len(out) <= 40
+
+
+def valid_base58(address):
+    """Whether ADDRESS is a checksum-correct base58check P2PKH or P2SH address."""
+    number = 0
+    for char in address:
+        if char not in BASE58:
+            return False
+        number = number * 58 + BASE58.index(char)
+    raw = number.to_bytes(25, "big") if number.bit_length() <= 200 else b""
+    pad = len(address) - len(address.lstrip("1"))
+    if len(raw) != 25 or raw[:pad] != b"\x00" * pad:
+        return False
+    digest = hashlib.sha256(hashlib.sha256(raw[:21]).digest()).digest()
+    return raw[21:] == digest[:4] and raw[0] in BASE58_VERSIONS
+
+
+def valid_address(address):
+    """Whether ADDRESS looks like, and checksums as, a Bitcoin address."""
+    if not isinstance(address, str):
+        return False
+    if address.lower().startswith(("bc1", "tb1", "bcrt1")):
+        return valid_bech32(address)
+    return 26 <= len(address) <= 35 and valid_base58(address)
 
 
 def read_json(path):
@@ -41,7 +112,7 @@ def unpaid_rows(room, overrides):
             if row["status"] != "unpaid":
                 continue
             address = overrides.get(row["claimant"], row.get("address"))
-            if address is None or not ADDR.fullmatch(str(address)):
+            if address is None or not valid_address(address):
                 noaddr.append((row, row["prize_sats"]))
                 continue
             by_address.setdefault(address, []).append(row)
@@ -177,7 +248,7 @@ def cmd_address(args):
     """Record a payout address on a claimant's unpaid, address-less ledger rows."""
     if not ROOM.fullmatch(args.room):
         sys.exit(f"invalid room ID {args.room!r}")
-    if not ADDR.fullmatch(args.payout):
+    if not valid_address(args.payout):
         sys.exit(f"{args.payout!r} is not a Bitcoin address")
     if os.path.exists(f"{args.room}/payout-pending.json"):
         sys.exit("a payout batch is pending; record it as paid or replace it first")
