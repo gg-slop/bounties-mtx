@@ -7,12 +7,14 @@ The fixed four-column CSV in `<ROOM>/targets.csv` covers 2,235 unique initial
 missing event IDs referenced by the base DAG
 (`res/<ROOM>/merged-…-v12-d1-71756.jsonl`) or by event relations in that DAG.
 The room base is selected when the target table is first published and pinned in
-`<ROOM>/base.lock` by its path and fingerprint. A deeper merged DAG added later
-does not silently replace the published base. Changing the base requires an
-explicit table regeneration and migration of existing claims. Rezzy warning's
-1,820 count is the number of local events that reference missing `prev_events`;
-multiple events can point to the same ID, and missing `auth_events` and
-`m.relates_to` targets add more. The table was generated with
+`<ROOM>/base.lock` by its path, fingerprint, and budget. Each room can set its
+own budget with `scripts/bounty.py targets <ROOM> --budget SATS` before
+publication; the default is 20,000 sats. A deeper merged DAG added later does
+not silently replace the published base. Regenerating the table for a different
+base invalidates existing claims; they are not migrated automatically. Rezzy
+warning's 1,820 count is the number of local events that reference missing
+`prev_events`; multiple events can point to the same ID, and missing
+`auth_events` and `m.relates_to` targets add more. The table was generated with
 `scripts/bounty.py targets <ROOM>`.
 
 These are only the initial targets, not the whole of the missing history.
@@ -56,8 +58,10 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
    the PR. Never commit plaintext `.jsonl`. Base64 is an encoding, not privacy:
    anyone can decode it.
 5. Put your payout address on its own line in the PR description:
-   `Payout: bc1q…`. Without exactly one valid address there is no payout until
-   it is added.
+   `Payout: bc1q…`. It is read once, when the claim is merged; editing the
+   description afterwards does not change an award already recorded. With no
+   valid address the award is still recorded, but unpayable until the maintainer
+   supplies one (`payout --address <claimant>=<address>`).
 
 ## What CI does
 
@@ -113,14 +117,15 @@ unset or wrong, the script exits without accepting the claim.
   base DAG; CI checks the CSV's target IDs and ranking fields against that DAG
   and records its fingerprint in each claim.
 - Claimants give a Bitcoin address on a `Payout:` line of the PR description,
-  read when the claim is merged. `scripts/bounty.py payout <ROOM> --min 5000`
-  aggregates unpaid prizes by address, applies the minimum, and prints an
-  unsigned `bitcoin-cli walletcreatefundedpsbt` command to run manually with
-  your own node. After broadcasting, run `scripts/bounty.py paid <ROOM> <TXID>`
-  to mark those rows paid. A pending batch must be recorded as paid before
-  creating another; use `--replace` only to discard a batch that was not
-  broadcast. This repository does not sign or broadcast transactions. Address
-  totals under `--min` carry over (on-chain outputs below roughly 300–550 sats
-  are dust).
+  read when the claim is merged (a row recorded without one is paid only via
+  `payout --address <claimant>=<address>`).
+  `scripts/bounty.py payout <ROOM> --min 5000` aggregates unpaid prizes by
+  address, applies the minimum, and prints an unsigned
+  `bitcoin-cli walletcreatefundedpsbt` command to run manually with your own
+  node. After broadcasting, run `scripts/bounty.py paid <ROOM> <TXID>` to mark
+  those rows paid. A pending batch must be recorded as paid before creating
+  another; use `--replace` only to discard a batch that was not broadcast. This
+  repository does not sign or broadcast transactions. Address totals under
+  `--min` carry over (on-chain outputs below roughly 300–550 sats are dust).
 - Unclaimed prizes are not redistributed; at the deadline they return to the
   fund or roll into a later bounty.

@@ -19,8 +19,9 @@
 
 ROOM is the 43-char room ID. The bounty a claim targets comes from where it
 lives: ROOM/submissions/x.jsonl.b64 (build) or ROOM/deltas/x.claim.json (merge).
-The published base DAG and its fingerprint are pinned in ROOM/base.lock; before
-publication, targets selects the deepest matching merged DAG under res/ROOM.
+The published base DAG, fingerprint, and budget are pinned in ROOM/base.lock;
+before publication, targets selects the deepest matching merged DAG under
+res/ROOM.
 The payout address is a "Payout: <address>" line in the PR description (merge
 --pr-body).
 
@@ -386,36 +387,39 @@ def submission_base(path, override=None):
 
 
 TABLE_COLS = ("event_id", "n_refs", "min_child_depth", "prize_sats")
-PUBLISHED_BUDGET_SATS = 20_000
+DEFAULT_BUDGET_SATS = 20_000
 BASE_LOCK_NAME = "base.lock"
 
 
 def base_lock_path(room):
-    """Path to the published room base name and fingerprint."""
+    """Path to the published room base name, fingerprint, and budget."""
     return f"{room}/{BASE_LOCK_NAME}"
 
 
 def read_base_lock(room):
-    """Return the published (base name, fingerprint), if the lock exists."""
+    """Return the published (base name, fingerprint, budget), if it exists."""
     path = base_lock_path(room)
     if not os.path.exists(path):
         return None
     try:
         with open(path, encoding="ascii") as f:
-            name, fingerprint = f.read().splitlines()
+            name, fingerprint, budget = f.read().splitlines()
+            budget = int(budget)
     except (OSError, ValueError):
-        sys.exit(f"{path}: expected a base path and SHA-256 on separate lines")
-    if not re.fullmatch(
-        rf"res/{room}/merged-{room}-[A-Za-z0-9._-]+\.jsonl", name
-    ) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        sys.exit(f"{path}: expected base path, SHA-256, and budget on separate lines")
+    if (
+        not re.fullmatch(rf"res/{room}/merged-{room}-[A-Za-z0-9._-]+\.jsonl", name)
+        or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+        or budget < 0
+    ):
         sys.exit(f"{path}: invalid base lock")
-    return name, fingerprint
+    return name, fingerprint, budget
 
 
-def write_base_lock(room, base_name, base):
+def write_base_lock(room, base_name, base, budget):
     """Pin the published room base and its canonical event-set fingerprint."""
     with open(base_lock_path(room), "w", encoding="ascii") as f:
-        f.write(f"{base_name}\n{base_fingerprint(base)}\n")
+        f.write(f"{base_name}\n{base_fingerprint(base)}\n{budget}\n")
 
 
 def write_table(path, table):
@@ -574,7 +578,7 @@ def check_published_base(room, base_name, base, table):
     lock = read_base_lock(room)
     if lock is None:
         sys.exit(f"{base_lock_path(room)} is missing; publish the base lock first")
-    expected_base, expected_fingerprint = lock
+    expected_base, expected_fingerprint, budget = lock
     if expected_base != base_name or table.get("base") != base_name:
         sys.exit(f"claim must use the published room base {expected_base!r}")
     fingerprint = base_fingerprint(base)
@@ -588,22 +592,31 @@ def check_published_base(room, base_name, base, table):
     if actual != expected:
         sys.exit(f"{targets_file(room)} does not match the selected base DAG")
     paid = [row["prize_sats"] for row in table["targets"]]
-    if paid != prizes(len(paid), PUBLISHED_BUDGET_SATS):
+    if paid != prizes(len(paid), budget):
         sys.exit(f"{targets_file(room)} prizes are not the published uniform split")
     table["base_sha256"] = fingerprint
 
 
 def cmd_targets(args):
     """Write ROOM/targets.csv with ranks and prizes."""
-    if args.budget != PUBLISHED_BUDGET_SATS:
-        sys.exit(f"the published budget is fixed at {PUBLISHED_BUDGET_SATS} sats")
     lock = read_base_lock(args.room)
+    budget = (
+        args.budget
+        if args.budget is not None
+        else lock[2]
+        if lock is not None
+        else DEFAULT_BUDGET_SATS
+    )
+    if budget < 0:
+        sys.exit("--budget must be non-negative")
+    if lock and budget != lock[2] and not args.regenerate:
+        sys.exit("changing the published budget requires --regenerate")
     base_name = find_base(args.room) if args.regenerate or lock is None else lock[0]
     if args.base and args.base != base_name:
         sys.exit(f"--base must name the room's published base {base_name!r}")
     base = load(base_name)
     rows = rank_targets(base)
-    p = prizes(len(rows), args.budget)
+    p = prizes(len(rows), budget)
     path = f"{args.room}/targets.csv"
     target_rows = [{**r, "prize_sats": p[i]} for i, r in enumerate(rows)]
     published = {"targets": target_rows}
@@ -611,7 +624,7 @@ def cmd_targets(args):
         existing = read_table(path)
         differs = existing["targets"] != target_rows or (
             bool(target_rows)
-            and sum(row["prize_sats"] for row in existing["targets"]) != args.budget
+            and sum(row["prize_sats"] for row in existing["targets"]) != budget
         )
         if differs:
             if not args.regenerate:
@@ -619,17 +632,17 @@ def cmd_targets(args):
                     f"{path} is already published; refusing to change ranks or prizes"
                 )
             write_table(path, published)
-            write_base_lock(args.room, base_name, base)
+            write_base_lock(args.room, base_name, base, budget)
             print(f"regenerated target table for {base_name}")
             return
         write_table(path, existing)
         if args.regenerate or lock is None:
-            write_base_lock(args.room, base_name, base)
+            write_base_lock(args.room, base_name, base, budget)
         print(f"target table verified for {base_name}")
         return
     os.makedirs(args.room, exist_ok=True)
     write_table(path, published)
-    write_base_lock(args.room, base_name, base)
+    write_base_lock(args.room, base_name, base, budget)
     if p:
         print(
             f"{len(rows)} targets; first prize {p[0]} sats, last {p[-1]}; "
@@ -963,7 +976,7 @@ def main():
     sp = ap.add_subparsers(required=True)
     s = sp.add_parser("targets")
     s.add_argument("room")
-    s.add_argument("--budget", type=int, default=20000)
+    s.add_argument("--budget", type=int)
     s.add_argument("--base")
     s.add_argument("--regenerate", action="store_true")
     s.set_defaults(f=cmd_targets)
