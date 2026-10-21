@@ -46,7 +46,7 @@ selects the bounty.
 What CI then does:
 
 - CI verifies every event's ID equals its room version's reference hash (no
-  trust needed), rejects conflicts with the base, and writes
+  trust needed), drops events already in the base, and writes
   `<ROOM>/deltas/<digest>.delta.jsonl.b64` (only events absent from base, also
   base64) plus `<digest>.claim.json` (closed targets, dangling links).
 - For same-repository PRs, CI replaces the encoded submission with its delta and
@@ -57,10 +57,11 @@ What CI then does:
 
 ## Running the tools locally
 
-Claimants need none of this: CI builds and runs everything. A maintainer who
-runs `scripts/bounty.py build` or `merge` by hand needs `orjson` and rezzy's C
-library, `librezzy_ffi`, built from the same commit CI uses (`REZZY_SHA` at the
-top of `.github/workflows/claim.yml`). The `rezzy` command alone is not enough.
+Claimants only need `orjson` (`pip install orjson`) for `decode` and `encode`;
+CI builds everything else. A maintainer who runs `scripts/bounty.py build` or
+`merge` by hand also needs rezzy's C library, `librezzy_ffi`, built from the
+same commit CI uses (`REZZY_SHA` at the top of `.github/workflows/claim.yml`).
+The `rezzy` command alone is not enough.
 
 ```sh
 REZZY_SHA=$(sed -n 's/^  REZZY_SHA: //p' .github/workflows/claim.yml)

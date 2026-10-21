@@ -105,6 +105,8 @@ def iter_lines(path, b64_only=False):
     if not sources:
         raise FileNotFoundError(f"no input for {path}")
     for src in sources:
+        if os.path.islink(src) or not os.path.isfile(src):
+            raise SystemExit(f"{src}: not a regular file")
         with open(src, "rb") as f:
             for line in f:  # bytes: splits on \n only, never on U+2028
                 line = line.rstrip(b"\n")
