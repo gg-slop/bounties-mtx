@@ -220,7 +220,8 @@ def check_events(events, base):
         return checked
     room_id, version = room_info(base)
     for start in range(0, len(events), BATCH):
-        chunk = events[start : start + BATCH]
+        end = start + BATCH
+        chunk = events[start:end]
         records = rezzy_events([canon(e) for e in chunk], version)
         checked.extend(check_event(e, r, room_id) for e, r in zip(chunk, records))
     return checked
