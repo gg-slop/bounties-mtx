@@ -12,11 +12,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-# pylint: disable=wrong-import-position,import-error
+# pylint: disable-next=wrong-import-position,import-error
 import bounty_award as rc  # noqa: E402
-import bounty_payout  # noqa: E402
-
-# pylint: enable=wrong-import-position,import-error
 
 ROOM = "A" * 43
 ADDR_A = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
@@ -384,12 +381,9 @@ class PublishTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
         self.addCleanup(self.tmp.cleanup)
-        for patcher in (
-            patch.object(rc, "_payout_module", return_value=bounty_payout),
-            patch.dict(bounty_payout.ROOM_NETWORKS, {ROOM: "main"}),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        networks = patch.dict(rc.payout_module().ROOM_NETWORKS, {ROOM: "main"})
+        networks.start()
+        self.addCleanup(networks.stop)
         self.root = os.path.join(self.tmp.name, "repo")
         self.src = os.path.join(self.tmp.name, "staged")
         os.makedirs(os.path.join(self.root, ROOM))

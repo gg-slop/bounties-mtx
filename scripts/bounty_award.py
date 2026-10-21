@@ -38,7 +38,7 @@ PAYOUT_LINE = re.compile(r"(?im)^[ \t]*payout(?: address)?[ \t]*:[ \t]*(\S+)[ \t
 
 
 @functools.cache
-def _payout_module():
+def payout_module():
     """Load the sibling bounty_payout, whose address checks replay also uses."""
     spec = importlib.util.spec_from_file_location(
         "bounty_payout", os.path.join(HERE, "bounty_payout.py")
@@ -464,7 +464,7 @@ def trusted_claims(resolved):
 
 def body_address(room, body):
     """The one payout address valid for ROOM's network in BODY, as replay finds it."""
-    payout = _payout_module()
+    payout = payout_module()
     network = payout.room_network(room)
     addresses = {
         payout.normalize_address(value)
@@ -481,34 +481,34 @@ def row_problem(room, row, prizes, prs, deltas):
     target = row["target"]
     if not isinstance(target, str) or target not in prizes:
         return "target is not published"
-    claimant, address, pr_number, delta = (
-        row["claimant"],
-        row["address"],
-        row["pr"],
-        row["delta"],
-    )
     prize = row["prize_sats"]
     if not (
-        isinstance(claimant, str)
-        and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", claimant)
-        and (address is None or isinstance(address, str) and bool(address))
-        and isinstance(pr_number, str)
-        and pr_number.isdigit()
-        and isinstance(delta, str)
+        isinstance(row["claimant"], str)
+        and re.fullmatch(
+            r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", row["claimant"]
+        )
+        and (
+            row["address"] is None
+            or isinstance(row["address"], str)
+            and bool(row["address"])
+        )
+        and isinstance(row["pr"], str)
+        and row["pr"].isdigit()
+        and isinstance(row["delta"], str)
     ):
         return "non-string field"
-    pr = prs.get(pr_number)
+    pr = prs.get(row["pr"])
     expected_address = body_address(room, pr["body"] if pr else "")
     checks = (
         (row["status"] == "unpaid", "not unpaid"),
         (isinstance(prize, int) and not isinstance(prize, bool), "bad prize"),
         (prize == prizes[target], "prize is not the published one"),
-        (pr and claimant == pr["author"], "claimant is not the PR author"),
+        (pr and row["claimant"] == pr["author"], "claimant is not the PR author"),
         (
-            address == expected_address,
+            row["address"] == expected_address,
             "address is not the single payout address in the PR",
         ),
-        (deltas.get(delta) == pr_number, "delta was not claimed by this PR"),
+        (deltas.get(row["delta"]) == row["pr"], "delta was not claimed by this PR"),
     )
     return next((why for ok, why in checks if not ok), None)
 
