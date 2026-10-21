@@ -28,34 +28,36 @@ def bech32_polymod(values):
 
 def valid_bech32(address):
     """Whether ADDRESS is a checksum-correct bech32 (v0) or bech32m (v1+) address."""
-    if len(address) > 90 or (address.lower() != address and address.upper() != address):
-        return False
-    address = address.lower()
-    hrp, sep, data = address.rpartition("1")
-    if not sep or hrp not in ("bc", "tb", "bcrt") or len(data) < 7:
-        return False
-    if any(c not in BECH32 for c in data):
-        return False
-    values = [BECH32.index(c) for c in data]
-    hrp_values = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
-    check = bech32_polymod(hrp_values + values)
-    version, program = values[0], values[1:-6]
-    if version > 16 or check != (1 if version == 0 else 0x2BC830A3):
-        return False
-    acc = bits = 0
-    out = []
-    for value in program:
-        acc = (acc << 5) | value
-        bits += 5
-        while bits >= 8:
-            bits -= 8
-            out.append((acc >> bits) & 0xFF)
-        acc &= (1 << bits) - 1
-    if bits >= 5 or acc:  # padding must be under five bits, all zero
-        return False
-    if version == 0:
-        return len(out) in (20, 32)
-    return 2 <= len(out) <= 40
+    valid = len(address) <= 90 and (
+        address.lower() == address or address.upper() == address
+    )
+    if valid:
+        address = address.lower()
+        hrp, sep, data = address.rpartition("1")
+        valid = bool(sep and hrp in ("bc", "tb", "bcrt") and len(data) >= 7)
+    if valid:
+        values = [BECH32.index(c) for c in data if c in BECH32]
+        valid = len(values) == len(data)
+    if valid:
+        hrp_values = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+        check = bech32_polymod(hrp_values + values)
+        version, program = values[0], values[1:-6]
+        valid = version <= 16 and check == (1 if version == 0 else 0x2BC830A3)
+    if valid:
+        acc = bits = 0
+        out = []
+        for value in program:
+            acc = (acc << 5) | value
+            bits += 5
+            while bits >= 8:
+                bits -= 8
+                out.append((acc >> bits) & 0xFF)
+            acc &= (1 << bits) - 1
+        valid = bits < 5 and acc == 0
+        valid = valid and (
+            len(out) in (20, 32) if version == 0 else 2 <= len(out) <= 40
+        )
+    return valid
 
 
 def valid_base58(address):
