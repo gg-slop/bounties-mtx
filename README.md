@@ -9,8 +9,8 @@ room's current DAG, follow the setup steps below. Encode claim submissions as
 claim PR.
 
 ```shell
-git clone https://github.com/gamesguru/bounties-mtx.git
-cd bounties-mtx
+git clone https://github.com/gamesguru/gapfill-bounties.git
+cd gapfill-bounties
 git submodule update --init --recursive
 python3 ./scripts/bounty.py decode
 # ~~~~
