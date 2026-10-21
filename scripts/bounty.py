@@ -430,7 +430,7 @@ def relation_ids(e):
     ids = [rel.get("event_id")]
     if isinstance(reply, dict):
         ids.append(reply.get("event_id"))
-    return [i for i in dict.fromkeys(ids) if isinstance(i, str) and i.startswith("$")]
+    return list(dict.fromkeys(i for i in ids if isinstance(i, str) and i.startswith("$")))
 
 
 def links(e):
@@ -552,7 +552,7 @@ def cmd_targets(args):
         existing = read_table(path)
         differs = (
             existing["targets"] != target_rows
-            or sum(row["prize_sats"] for row in existing["targets"]) != args.budget
+            or (bool(target_rows) and sum(row["prize_sats"] for row in existing["targets"]) != args.budget)
         )
         if differs:
             if not args.regenerate:

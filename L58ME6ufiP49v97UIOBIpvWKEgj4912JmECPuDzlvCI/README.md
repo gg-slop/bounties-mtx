@@ -68,8 +68,8 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
 
 ## Running the tools locally
 
-Claimants need `orjson` (`pip install orjson`) for `decode` and `encode`. A
-maintainer running `scripts/bounty.py build` or `merge` by hand also needs
+Claimants need Python 3.12+ and `orjson` (`pip install orjson`) for `decode` and `encode`.
+A maintainer running `scripts/bounty.py build` or `merge` by hand also needs
 Rezzy's C library, `librezzy_ffi`, built from the same pinned commit CI uses
 (`REZZY_SHA` at the top of `.github/workflows/claim.yml`). The `rezzy` command
 alone is not enough.
