@@ -17,8 +17,9 @@ remains eligible for the award in its own row.
 
 ## Claiming
 
-For each room, one PR adds exactly one submission file, plus that room's
-`submissions/manifest.json`. `<ROOM>` is the base-64-url room ID; the directory
+For each room, one PR adds one logical submission, which may consist of multiple
+sequential `.NN` part files when it exceeds 50,000 lines, plus that room's
+`submissions/manifest.json`. `<ROOM>` is the 43-character room ID; the directory
 selects the bounty.
 
 1. Get the base DAG: `git submodule update --init`, then
@@ -30,12 +31,13 @@ selects the bounty.
    `<ROOM>/submissions/<username>.jsonl`, then
    `python3 scripts/bounty.py encode <ROOM>/submissions/<username>.jsonl`.
    `<username>` is a unique name using only letters, digits, `-` and `_`: your
-   GitHub username, or for a Matrix ID the localpart without `@` or the server.
-   Add `-2` for a later claim. The `.00` that `encode` appends is a part number,
-   not a claim counter.
-4. Commit **only** `<ROOM>/submissions/<username>.00.jsonl.b64` and
-   `<ROOM>/submissions/manifest.json`, then open the PR. Never commit plaintext
-   `.jsonl`. Base64 is an encoding, not privacy: anyone can decode it.
+   GitHub username, or a filename-safe alias of your Matrix localpart (replace
+   any other character, such as `.`, with `_`). Add `-2` for a later claim. The
+   `.00` that `encode` appends is a part number, not a claim counter.
+4. Commit **all** generated parts for this logical submission, from
+   `<username>.00.jsonl.b64` onward, and `<ROOM>/submissions/manifest.json`,
+   then open the PR. Never commit plaintext `.jsonl`. Base64 is an encoding, not
+   privacy: anyone can decode it.
 5. The manifest is `{"payout": "bc1q…"}`. No address, no payout. It may also pin
    the base as `{"base": "merged-<ROOM>-…"}`, but it cannot select a different
    one: the published `targets.csv` fixes the authoritative base DAG, and claims
@@ -43,14 +45,35 @@ selects the bounty.
 
 What CI then does:
 
-- CI verifies every event's ID equals its room-v12 reference hash (no trust
-  needed), rejects conflicts with the base, and writes
+- CI verifies every event's ID equals its room version's reference hash (no
+  trust needed), rejects conflicts with the base, and writes
   `<ROOM>/deltas/<digest>.delta.jsonl.b64` (only events absent from base, also
   base64) plus `<digest>.claim.json` (closed targets, dangling links).
 - For same-repository PRs, CI replaces the encoded submission with its delta and
   keeps a copy of the submission as a 14-day artifact. For fork PRs, the source
   branch retains the encoded submission; a maintainer runs
-  `scripts/bounty.py build` and adds the resulting delta.
+  `scripts/bounty.py build` and adds the resulting delta (set up the tools
+  first: see _Running the tools locally_ below).
+
+## Running the tools locally
+
+Claimants need none of this: CI builds and runs everything. A maintainer who
+runs `scripts/bounty.py build` or `merge` by hand needs `orjson` and rezzy's C
+library, `librezzy_ffi`, built from the same commit CI uses (`REZZY_SHA` at the
+top of `.github/workflows/claim.yml`). The `rezzy` command alone is not enough.
+
+```sh
+REZZY_SHA=$(sed -n 's/^  REZZY_SHA: //p' .github/workflows/claim.yml)
+git clone https://github.com/gamesguru/rezzy.git ../rezzy-pinned
+git -C ../rezzy-pinned checkout "$REZZY_SHA"
+rustup toolchain install 1.88.0 --profile minimal
+(cd ../rezzy-pinned &&
+  RUSTUP_TOOLCHAIN=1.88.0 cargo build --release --locked -p rezzy-ffi)
+export REZZY_LIB="$(realpath ../rezzy-pinned)/target/release/librezzy_ffi.so"
+```
+
+Use the absolute path, and `.dylib` instead of `.so` on macOS. If `REZZY_LIB` is
+unset or wrong, the script exits and accepts nothing.
 
 ## Closure
 

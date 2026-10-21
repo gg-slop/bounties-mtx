@@ -23,6 +23,9 @@ jobs:
           # ledger push. Start from the current branch so reconciliation sees it.
           ref: master
           fetch-depth: 0
+          # The rezzy build below runs third-party build scripts: keep the
+          # write-scoped token out of .git/config until the push step.
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: gamesguru/bounties-mtx-res
@@ -149,6 +152,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           shopt -s nullglob
           for ledger in */ledger.jsonl; do
             git add -- "$ledger"

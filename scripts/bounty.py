@@ -27,9 +27,11 @@ a DAG accepts FILE or, if FILE is absent, its .b64 parts (or a single FILE.b64).
 
 Builds may use explicitly selected earlier deltas. The merge workflow replays
 claims in order, adding each verified delta to the pool used for later claims.
-Requires orjson (canonical bytes must be identical everywhere) and rezzy:
-set REZZY_LIB to the absolute path of librezzy_ffi. rezzy owns every room-version rule
-(reference hash, redaction, content hash); this script only checks the results.
+Requires orjson (canonical bytes must be identical everywhere). build and merge
+also need rezzy's C library: set REZZY_LIB to the absolute path of librezzy_ffi.
+The other commands (targets, payout, paid, encode, decode) do not load it. rezzy
+owns every room-version rule (reference hash, redaction, content hash); this
+script only checks the results.
 
 A target is a deduplicated prev_events/auth_events ID referenced by BASE but
 absent from it. Event IDs are the room version's reference hashes, which the
@@ -157,7 +159,10 @@ def rezzy_events(lines, room_version):
     """
     path = os.environ.get("REZZY_LIB", "")
     if not os.path.isabs(path) or not os.path.isfile(path):
-        sys.exit("set REZZY_LIB to the absolute path of librezzy_ffi")
+        sys.exit(
+            "set REZZY_LIB to the absolute path of librezzy_ffi "
+            "(see BOUNTY.md, Running the tools locally)"
+        )
     lib = ctypes.CDLL(path)
     lib.rezzy_hash_events.argtypes = [
         ctypes.c_char_p,
@@ -205,33 +210,57 @@ def check_event(event, rec, room_id):
     return kept, None
 
 
+BATCH = 256  # events per rezzy call, which bounds the copies held at once
+
+
 def check_events(events, base):
     """[(Event, None) | (None, reason)] for each of EVENTS, in order."""
+    checked = []
     if not events:
-        return []
+        return checked
     room_id, version = room_info(base)
-    records = rezzy_events([canon(e) for e in events], version)
-    return [check_event(e, r, room_id) for e, r in zip(events, records)]
+    for start in range(0, len(events), BATCH):
+        chunk = events[start : start + BATCH]
+        records = rezzy_events([canon(e) for e in chunk], version)
+        checked.extend(check_event(e, r, room_id) for e, r in zip(chunk, records))
+    return checked
 
 
 def load_delta(path, base):
     """Load and validate one delta; its filename digest covers canonical source rows."""
-    source = [orjson.loads(line) for line in iter_lines(path)]
     events = {}
-    for checked, err in check_events(source, base):
-        if err:
-            sys.exit(f"{path}: {err}")
-        eid = checked["event_id"]
-        if eid in base:
-            sys.exit(f"{path}: delta event {eid} already exists in base")
-        previous = events.get(eid)
-        if previous is None or (full_content(checked) and not full_content(previous)):
-            events[eid] = checked
-    body = b"".join(
-        canon(e) + b"\n" for e in sorted(source, key=lambda e: e["event_id"])
-    )
+    digest = hashlib.sha256()
+    previous_id = None
+    batch = []
+
+    def validate_batch():
+        for checked, err in check_events(batch, base):
+            if err:
+                sys.exit(f"{path}: {err}")
+            eid = checked["event_id"]
+            if eid in base:
+                sys.exit(f"{path}: delta event {eid} already exists in base")
+            previous = events.get(eid)
+            if previous is None or (
+                full_content(checked) and not full_content(previous)
+            ):
+                events[eid] = checked
+        batch.clear()
+
+    for line in iter_lines(path):
+        event = orjson.loads(line)
+        eid = event.get("event_id")
+        if not isinstance(eid, str) or (previous_id is not None and eid <= previous_id):
+            sys.exit(f"{path}: delta events are not sorted by unique event ID")
+        previous_id = eid
+        digest.update(canon(event) + b"\n")
+        batch.append(event)
+        if len(batch) >= BATCH:
+            validate_batch()
+    if batch:
+        validate_batch()
     expected = os.path.basename(path).split(".", 1)[0]
-    if hashlib.sha256(body).hexdigest()[:16] != expected:
+    if digest.hexdigest()[:16] != expected:
         sys.exit(f"{path}: delta digest does not match its contents")
     return events
 
@@ -294,7 +323,7 @@ def combine_pools(*pools):
 
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
-SUBMISSION_NAME = re.compile(r"[A-Za-z0-9_-]+(\.[0-9]+)?\.jsonl(\.b64)?")
+SUBMISSION_NAME = re.compile(r"[A-Za-z0-9_-]+(\.[0-9]{2,})?\.jsonl(\.b64)?")
 
 
 def room_of(path):
@@ -535,22 +564,23 @@ def parse_submission(path, base):
     PATH is per-line base64 (*.jsonl.b64); plain JSONL is accepted for local use.
     """
     sub, errs = {}, []
-    parsed = []  # (line number, event)
+    lines = enumerate(iter_lines(path), 1)
     try:
-        for n, line in enumerate(iter_lines(path), 1):
-            try:
-                parsed.append((n, orjson.loads(line)))
-            except orjson.JSONDecodeError:
-                errs.append(f"line {n}: invalid JSON")
+        while batch := list(itertools.islice(lines, BATCH)):
+            parsed = []  # (line number, event)
+            for n, line in batch:
+                try:
+                    parsed.append((n, orjson.loads(line)))
+                except orjson.JSONDecodeError:
+                    errs.append(f"line {n}: invalid JSON")
+            results = check_events([e for _, e in parsed], base)
+            for (n, _), (checked, err) in zip(parsed, results):
+                if err:
+                    errs.append(f"line {n}: {err}")
+                else:
+                    sub[checked["event_id"]] = checked
     except ValueError as exc:  # bad base64
         errs.append(f"invalid base64: {exc}")
-        return sub, errs
-    results = check_events([e for _, e in parsed], base)
-    for (n, _), (checked, err) in zip(parsed, results):
-        if err:
-            errs.append(f"line {n}: {err}")
-        else:
-            sub[checked["event_id"]] = checked
     return sub, errs
 
 
