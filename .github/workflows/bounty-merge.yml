@@ -7,6 +7,9 @@ concurrency:
   group: bounty-ledger
   cancel-in-progress: false
 permissions: {}
+env:
+  # The commit of rezzy whose C ABI checks every event; bump it deliberately.
+  REZZY_SHA: 48adad07e9ebe63a377568e89da574e502a284f4
 jobs:
   award:
     runs-on: ubuntu-latest
@@ -26,6 +29,20 @@ jobs:
           path: res
           persist-credentials: false
       - run: pip install orjson==3.11.3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: gamesguru/rezzy
+          ref: ${{ env.REZZY_SHA }}
+          path: rezzy
+          persist-credentials: false
+      - name: Build librezzy_ffi from the pinned commit
+        run: |
+          set -euo pipefail
+          test "$(git -C rezzy rev-parse HEAD)" = "$REZZY_SHA"
+          test -z "$(git -C rezzy status --porcelain)"
+          rustup toolchain install 1.88.0 --profile minimal --no-self-update
+          (cd rezzy && RUSTUP_TOOLCHAIN=1.88.0 cargo build --release --locked -p rezzy-ffi)
+          echo "REZZY_LIB=$GITHUB_WORKSPACE/rezzy/target/release/librezzy_ffi.so" >> "$GITHUB_ENV"
       - name: Reconcile claims in merge order
         env:
           GH_TOKEN: ${{ github.token }}
