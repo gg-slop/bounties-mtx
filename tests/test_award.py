@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
@@ -44,12 +45,15 @@ class FakeRemote:
 
     def __init__(self):
         self.claims = {}
+        self.malformed = set()
         self.trusted = {}
         self.prs_by_commit = {}
         self.broken = set()
         self.lookups = []
 
     def read_claim(self, path):
+        if path in self.malformed:
+            raise ValueError("invalid JSON")
         return self.claims.get(path)
 
     def trusted_file(self, room, name):
@@ -72,19 +76,35 @@ class FakeRemote:
         return f"Payout: bc1q{pr}"
 
 
+def slurp(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
 class FakeLocal:
     """Stand-in for rc.Local: claim files and a scripted merge."""
 
     def __init__(self, claims):
         self.claims = claims
+        self.malformed = set()
         self.merge_ok = {}
         self.merges = []
+        self.seen = []
 
     def read_claim(self, path):
+        if path in self.malformed:
+            raise ValueError("invalid JSON")
         return self.claims.get(path)
 
     def merge(self, argv):
         self.merges.append(argv)
+        self.seen.append(
+            {
+                a.split("=", 1)[0]: slurp(a.split("=", 1)[1])
+                for a in argv
+                if a.startswith(("--trusted-targets=", "--pr-body="))
+            }
+        )
         return self.merge_ok.get(argv[0], True)
 
 
@@ -117,6 +137,7 @@ class Flow(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(doc, f)
         self.local = FakeLocal(self.remote.claims)
+        self.local.malformed = self.remote.malformed.copy()
         self.local.merge_ok = merge_ok or {}
         self.awarder = rc.Awarder(
             self.local, rc.load_resolved(path), self.tmp.name, log=lambda _: None
@@ -155,9 +176,71 @@ class ResolveReplayTest(Flow):
         self.add(ROOM, "aa", 1)
         self.replay()
         argv = self.local.merges[0]
-        # the temp files are gone, so check what was passed
         self.assertTrue(self.arg(argv, "--trusted-targets").endswith("-targets.csv"))
-        self.assertTrue(self.arg(argv, "--pr-body").endswith("pr-7-body.txt"))
+        self.assertEqual(self.local.seen[0]["--trusted-targets"], b"x")
+        self.assertEqual(self.local.seen[0]["--pr-body"], b"Payout: bc1q7")
+
+    def test_pr_lookups_are_cached_by_number(self):
+        self.add(ROOM, "aa", 1)
+        self.add(OTHER, "bb", 2)
+        calls = []
+        author = self.remote.pr_author
+        self.remote.pr_author = lambda pr: calls.append(pr) or author(pr)
+        self.resolve()
+        self.assertEqual(calls, ["7"])
+
+    def test_processed_claims_are_not_replayed_and_remain_prior_deltas(self):
+        prior = claim_path(ROOM, "aa")
+        current = self.add(ROOM, "bb", 1)
+        doc = self.resolve()
+        doc["processed"] = [
+            {"claim": prior, "delta": prior.replace(".claim.json", ".delta.jsonl.b64")}
+        ]
+        self.assertEqual([claim for _, claim in doc["history"]], [current])
+        self.assertEqual(self.replay(doc), [])
+        self.assertEqual(len(self.local.merges), 1)
+        self.assertEqual(
+            self.arg(self.local.merges[0], "--prior-delta"),
+            prior.replace(".claim.json", ".delta.jsonl.b64"),
+        )
+        self.assertEqual(
+            [entry["claim"] for entry in self.awarder.completed], [prior, current]
+        )
+
+    def test_remote_history_filters_processed_claims(self):
+        older, newer = claim_path(ROOM, "aa"), claim_path(OTHER, "bb")
+        output = f"COMMIT\t{commit(1)}\n{older}\nCOMMIT\t{commit(2)}\n{newer}\n"
+        with patch.object(rc.Remote, "_run", return_value=output.encode()):
+            self.assertEqual(
+                rc.Remote("0" * 40, "owner/repo").history(
+                    [
+                        {
+                            "claim": older,
+                            "delta": older.replace(".claim.json", ".delta.jsonl.b64"),
+                        }
+                    ]
+                ),
+                [(commit(2), newer)],
+            )
+
+    def test_malformed_claim_is_reported_and_others_still_award(self):
+        bad = self.add(ROOM, "aa", 1)
+        self.add(ROOM, "bb", 2)
+        self.add(OTHER, "cc", 3)
+        self.remote.malformed.add(bad)
+        errors = self.replay()
+        self.assertEqual(len(errors), 2)
+        self.assertIn("malformed JSON", errors[0])
+        self.assertIn("deferred", errors[1])
+        self.assertEqual(len(self.local.merges), 1)
+
+    def test_local_read_claim_raises_for_bad_json(self):
+        path = os.path.join(self.tmp.name, "c.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{nope")
+        with self.assertRaises(ValueError):
+            rc.Local().read_claim(path)
+        self.assertIsNone(rc.Local().read_claim(path + ".gone"))
 
     def test_failed_merge_is_not_a_prior_delta(self):
         first = self.add(ROOM, "aa", 1)
@@ -300,8 +383,27 @@ class PublishTest(unittest.TestCase):
         self.src = os.path.join(self.tmp.name, "staged")
         os.makedirs(os.path.join(self.root, ROOM))
         os.makedirs(os.path.join(self.src, ROOM))
-        self.write(os.path.join(self.root, ROOM, "targets.csv"), "x")
+        self.write(
+            os.path.join(self.root, ROOM, "targets.csv"),
+            "event_id,n_refs,min_child_depth,prize_sats\n"
+            + "".join(f"${n},1,1,3\n" for n in range(1, 4)),
+        )
+        self.resolved = {
+            "history": [[commit(1), claim_path(ROOM, "aa")]],
+            "processed": [],
+            "claims": {
+                rc.claim_key(commit(1), claim_path(ROOM, "aa")): {
+                    "error": None,
+                    "pr": {
+                        "number": "1",
+                        "author": "a",
+                        "body": "Payout: bc1q" + "a" * 26,
+                    },
+                }
+            },
+        }
         self.write(os.path.join(self.src, "complete"), "ok\n")
+        self.write(os.path.join(self.src, "processed.json"), "[]")
 
     @staticmethod
     def write(path, text):
@@ -313,14 +415,17 @@ class PublishTest(unittest.TestCase):
         row = {
             "target": target,
             "claimant": "a",
-            "address": None,
+            "address": "bc1q" + "a" * 26,
             "pr": "1",
-            "delta": "d",
+            "delta": f"{ROOM}/deltas/aa.delta.jsonl.b64",
             "prize_sats": 3,
             "status": status,
         }
         row.update(extra)
         return json.dumps(row) + "\n"
+
+    def pub(self, src):
+        return rc.publish(src, self.resolved, self.root)
 
     def stage(self, text):
         self.write(os.path.join(self.src, ROOM, "ledger.jsonl"), text)
@@ -331,19 +436,39 @@ class PublishTest(unittest.TestCase):
     def test_appends_new_rows(self):
         self.current(self.row("$1"))
         self.stage(self.row("$1") + self.row("$2"))
-        changed, _ = rc.publish(self.src, self.root)
+        changed, _ = self.pub(self.src)
         self.assertEqual(changed, [ROOM])
         with open(os.path.join(self.root, ROOM, "ledger.jsonl"), encoding="utf-8") as f:
             self.assertEqual(len(f.readlines()), 2)
 
     def test_creates_first_ledger(self):
         self.stage(self.row("$1"))
-        self.assertEqual(rc.publish(self.src, self.root)[0], [ROOM])
+        self.assertEqual(self.pub(self.src)[0], [ROOM])
+
+    def test_publish_persists_only_resolved_processed_claims(self):
+        claim = claim_path(ROOM, "aa")
+        delta = claim.replace(".claim.json", ".delta.jsonl.b64")
+        self.resolved["claims"] = {
+            rc.claim_key(commit(1), claim): {
+                "error": None,
+                "pr": {"number": "1", "author": "a", "body": "Payout: bc1q" + "a" * 26},
+            }
+        }
+        self.stage(self.row("$1"))
+        self.write(
+            os.path.join(self.src, "processed.json"),
+            json.dumps([{"claim": claim, "delta": delta}]),
+        )
+        self.assertEqual(self.pub(self.src)[0], [ROOM])
+        self.assertEqual(
+            rc.load_processed(os.path.join(self.root, rc.PROCESSED_PATH))[0]["claim"],
+            claim,
+        )
 
     def test_unchanged_ledger_is_not_reported(self):
         self.current(self.row("$1"))
         self.stage(self.row("$1"))
-        self.assertEqual(rc.publish(self.src, self.root)[0], [])
+        self.assertEqual(self.pub(self.src)[0], [])
 
     def test_rejects_rewrites_and_bad_rows(self):
         self.current(self.row("$1"))
@@ -354,32 +479,44 @@ class PublishTest(unittest.TestCase):
             self.row("$1") + "not json\n",
             self.row("$1") + self.row("$2").rstrip("\n"),
             self.row("$1") + self.row("$2", prize_sats="3"),
+            self.row("$1") + self.row("$2", prize_sats=True),
+            self.row("$1") + self.row("$2", prize_sats=4),  # not the published prize
+            self.row("$1") + self.row("$1"),  # already awarded
+            self.row("$1") + self.row("$7"),  # not a target
+            self.row("$1") + self.row(["$2"]),  # invalid target type
+            self.row("$1") + self.row("$2", claimant="mallory"),
+            self.row("$1") + self.row("$2", address="bc1qforged"),
+            self.row("$1") + self.row("$2", pr="9"),
+            self.row("$1") + self.row("$2", delta=f"{ROOM}/deltas/ff.delta.jsonl.b64"),
+            self.row("$1")
+            + self.row("$2")
+            + self.row("$2"),  # repeated within the batch
         ):
             with self.subTest(staged=staged[-30:]):
                 self.stage(staged)
                 with self.assertRaises(SystemExit):
-                    rc.publish(self.src, self.root)
+                    self.pub(self.src)
 
     def test_rejects_unexpected_entries(self):
         self.stage(self.row("$1"))
         os.makedirs(os.path.join(self.src, "B" * 43))  # room without targets.csv
         self.write(os.path.join(self.src, "B" * 43, "ledger.jsonl"), self.row("$1"))
         with self.assertRaises(SystemExit):
-            rc.publish(self.src, self.root)
+            self.pub(self.src)
 
     def test_rejects_extra_files_symlinks_and_missing_marker(self):
         self.stage(self.row("$1"))
         self.write(os.path.join(self.src, ROOM, "hook"), "x")
         with self.assertRaises(SystemExit):
-            rc.publish(self.src, self.root)
+            self.pub(self.src)
         os.remove(os.path.join(self.src, ROOM, "hook"))
         os.symlink("/etc/passwd", os.path.join(self.src, "link"))
         with self.assertRaises(SystemExit):
-            rc.publish(self.src, self.root)
+            self.pub(self.src)
         os.remove(os.path.join(self.src, "link"))
         os.remove(os.path.join(self.src, "complete"))
         with self.assertRaises(SystemExit):
-            rc.publish(self.src, self.root)
+            self.pub(self.src)
 
     def test_errors_cannot_inject_workflow_commands(self):
         self.stage(self.row("$1"))
@@ -387,7 +524,7 @@ class PublishTest(unittest.TestCase):
             os.path.join(self.src, "errors.txt"),
             "::add-mask::x\nok" + chr(0x202E) + "\n",
         )
-        errors = rc.publish(self.src, self.root)[1]
+        errors = self.pub(self.src)[1]
         self.assertTrue(all(e.startswith("claim error: ") for e in errors))
         self.assertNotIn(chr(0x202E), "".join(errors))
 
@@ -398,11 +535,13 @@ class PublishTest(unittest.TestCase):
         os.makedirs(os.path.join(work, "notaroom"))
         self.write(os.path.join(work, "notaroom", "ledger.jsonl"), "x")
         out = os.path.join(self.tmp.name, "out")
-        rc.stage(out, ["boom\nsecond"], root=work)
-        self.assertEqual(sorted(os.listdir(out)), [ROOM, "complete", "errors.txt"])
+        rc.stage(out, ["boom\nsecond"], [], root=work)
+        self.assertEqual(
+            sorted(os.listdir(out)), [ROOM, "complete", "errors.txt", "processed.json"]
+        )
         with open(os.path.join(out, "errors.txt"), encoding="utf-8") as f:
             self.assertEqual(f.read(), "boom second\n")
-        self.assertEqual(rc.publish(out, self.root)[0], [ROOM])
+        self.assertEqual(self.pub(out)[0], [ROOM])
 
 
 if __name__ == "__main__":

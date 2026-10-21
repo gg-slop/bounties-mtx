@@ -15,6 +15,7 @@ with fakes.
 import argparse
 import base64
 import binascii
+import csv
 import json
 import os
 import re
@@ -29,6 +30,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TRUSTED = (("targets.csv", "target table"), ("base.lock", "base lock"))
 LEDGER_KEYS = {"target", "claimant", "address", "pr", "delta", "prize_sats", "status"}
 MAX_ERROR_LINES = 1000
+MAX_ERROR_BYTES = 1 << 20
+PROCESSED_PATH = "bounty-processed.json"
 
 
 def parse_claim_history(text):
@@ -97,13 +100,16 @@ class Remote(Local):
     def _run(cmd):
         return subprocess.run(cmd, check=True, capture_output=True).stdout
 
-    def history(self):
-        """Every claim added on master's first-parent history, oldest first."""
+    def history(self, processed=()):
+        """Unprocessed claims on master's first-parent history, oldest first."""
         out = self._run(
             ["git", "log", "--first-parent", "--reverse", "--diff-filter=A"]
             + ["--format=COMMIT%x09%H", "--name-only", "--", "*/deltas/*.claim.json"]
         )
-        return parse_claim_history(out.decode())
+        known = {entry["claim"] for entry in processed}
+        return [
+            item for item in parse_claim_history(out.decode()) if item[1] not in known
+        ]
 
     def trusted_file(self, room, name):
         """Bytes of ROOM/NAME as of before the push, or None."""
@@ -137,6 +143,7 @@ class Resolver:
         self.remote, self.log = remote, log
         self.rooms, self.claims, self.history = {}, {}, []
         self.blocked = set()
+        self.pr_cache = {}
 
     def fail(self, room, key, message):
         """Record an unresolvable claim; later claims in ROOM are deferred."""
@@ -165,8 +172,12 @@ class Resolver:
             return None, f"could not resolve PR for {commit}"
         except (ValueError, KeyError, TypeError):
             return None, f"could not parse PR attribution response for {commit}"
-        if pr is None:
-            return None, None
+        return (None, None) if pr is None else self.pr_details(pr)
+
+    def pr_details(self, pr):
+        """(pr dict, error or None) for PR number PR; looked up once per PR."""
+        if pr in self.pr_cache:
+            return self.pr_cache[pr], None
         try:
             who = self.remote.pr_author(pr)
         except (subprocess.CalledProcessError, OSError):
@@ -175,13 +186,18 @@ class Resolver:
             body = self.remote.pr_body(pr)
         except (subprocess.CalledProcessError, OSError):
             return None, f"could not read the description of PR #{pr}"
-        return {"number": pr, "author": who, "body": body}, None
+        self.pr_cache[pr] = {"number": pr, "author": who, "body": body}
+        return self.pr_cache[pr], None
 
     def one(self, commit, claim):
         """Resolve one claim."""
         room = claim.split("/", 1)[0]
         key = claim_key(commit, claim)
-        data = self.remote.read_claim(claim)
+        try:
+            data = self.remote.read_claim(claim)
+        except (OSError, UnicodeError, ValueError):
+            self.fail(room, key, "claim file is unreadable or malformed JSON")
+            return
         if data is None or room in self.blocked or sibling_problem(data, claim):
             return
         error = self.room_files(room)
@@ -193,12 +209,44 @@ class Resolver:
         else:
             self.claims[key] = {"error": None, "pr": pr}
 
-    def run(self, history):
-        """Resolve HISTORY [(commit, claim)]; return the resolved document."""
+    def run(self, history, processed=()):
+        """Resolve unprocessed HISTORY and retain prior verified deltas."""
         self.history = [list(h) for h in history]
         for commit, claim in history:
             self.one(commit, claim)
-        return {"history": self.history, "rooms": self.rooms, "claims": self.claims}
+        return {
+            "history": self.history,
+            "rooms": self.rooms,
+            "claims": self.claims,
+            "processed": list(processed),
+        }
+
+
+def load_processed(path=PROCESSED_PATH):
+    """Load and validate the durable list of successfully replayed claims."""
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "rb") as f:
+            entries = json.load(f)
+        if not isinstance(entries, list):
+            raise ValueError("expected a list")
+        seen = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {"claim", "delta"}:
+                raise ValueError("invalid entry")
+            claim, delta = entry["claim"], entry["delta"]
+            if not isinstance(claim, str) or not isinstance(delta, str):
+                raise ValueError("invalid claim or delta")
+            if not CLAIM_PATH.fullmatch(claim):
+                raise ValueError(f"invalid claim path {claim!r}")
+            expected = claim.replace(".claim.json", ".delta.jsonl.b64")
+            if delta != expected or claim in seen:
+                raise ValueError(f"invalid or duplicate claim {claim!r}")
+            seen.add(claim)
+        return entries
+    except (OSError, UnicodeError, ValueError) as exc:
+        sys.exit(f"{path}: invalid processed claim state: {exc}")
 
 
 def valid_claim(commit, claim):
@@ -232,6 +280,14 @@ def load_resolved(path):
                 and isinstance(pr["body"], str)
             ):
                 raise ValueError(f"bad PR entry for {key!r}")
+        for entry in doc["processed"]:
+            claim, delta = entry["claim"], entry["delta"]
+            if not isinstance(claim, str) or not isinstance(delta, str):
+                raise ValueError("bad processed claim entry")
+            if not CLAIM_PATH.fullmatch(claim) or delta != claim.replace(
+                ".claim.json", ".delta.jsonl.b64"
+            ):
+                raise ValueError("bad processed claim path")
     except (KeyError, TypeError, ValueError, binascii.Error) as exc:
         sys.exit(f"{path}: malformed resolved metadata: {exc}")
     return doc
@@ -245,6 +301,10 @@ class Awarder:
         self.errors = []
         self.blocked = set()
         self.prior = {}
+        for entry in resolved["processed"]:
+            room = entry["claim"].split("/", 1)[0]
+            self.prior.setdefault(room, []).append(entry["delta"])
+        self.completed = list(resolved["processed"])
 
     def error(self, claim, message):
         """Record and print an error for CLAIM."""
@@ -285,7 +345,11 @@ class Awarder:
     def one(self, commit, claim):
         """Process one claim."""
         room = claim.split("/", 1)[0]
-        data = self.src.read_claim(claim)
+        try:
+            data = self.src.read_claim(claim)
+        except (OSError, UnicodeError, ValueError):
+            self.block(room, claim, "claim file is unreadable or malformed JSON")
+            return
         if data is None:
             return
         if room in self.blocked:
@@ -310,6 +374,7 @@ class Awarder:
         """Merge one resolved CLAIM and record its delta for later claims."""
         if self.src.merge(self.merge_args(claim, room, pr)):
             self.prior.setdefault(room, []).append(delta)
+            self.completed.append({"claim": claim, "delta": delta})
             if pr is None:
                 self.log(f"{claim}: verified delta has no master PR; skipping prizes")
         elif pr is None:
@@ -324,8 +389,8 @@ class Awarder:
         return self.errors
 
 
-def stage(out, errors, root="."):
-    """Copy every room ledger under ROOT to OUT, with the errors, for publish."""
+def stage(out, errors, processed, root="."):
+    """Copy room ledgers, errors, and processed claim state for publish."""
     os.makedirs(out, exist_ok=True)
     for name in sorted(os.listdir(root)):
         src = os.path.join(root, name, "ledger.jsonl")
@@ -336,39 +401,174 @@ def stage(out, errors, root="."):
         f.write("".join(e.replace("\n", " ") + "\n" for e in errors))
     with open(os.path.join(out, "complete"), "w", encoding="utf-8") as f:
         f.write("ok\n")
+    with open(os.path.join(out, "processed.json"), "w", encoding="utf-8") as f:
+        json.dump(processed, f)
 
 
-def check_new_rows(room, tail):
-    """Exit unless TAIL is a run of well-formed unpaid ledger rows."""
+def read_prizes(room, path):
+    """{event_id: prize_sats} from the published target table at PATH."""
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            rows = csv.DictReader(f)
+            if rows.fieldnames != [
+                "event_id",
+                "n_refs",
+                "min_child_depth",
+                "prize_sats",
+            ]:
+                raise ValueError("invalid target table header")
+            prizes = {}
+            for row in rows:
+                target, prize = row["event_id"], int(row["prize_sats"])
+                if not target or target in prizes or prize < 0:
+                    raise ValueError("invalid or duplicate target")
+                prizes[target] = prize
+            return prizes
+    except (OSError, KeyError, ValueError) as exc:
+        sys.exit(f"{room}/targets.csv: unreadable target table: {exc}")
+
+
+def trusted_claims(resolved):
+    """({PR number: pr dict}, {delta paths}) from the resolved metadata."""
+    prs = {e["pr"]["number"]: e["pr"] for e in resolved["claims"].values() if e["pr"]}
+    deltas = {
+        c.replace(".claim.json", ".delta.jsonl.b64") for _, c in resolved["history"]
+    }
+    return prs, deltas
+
+
+def row_problem(row, prizes, prs, deltas):
+    """Why ROW is not a legitimate new award, or None."""
+    if not (isinstance(row, dict) and set(row) == LEDGER_KEYS):
+        return "unexpected fields"
+    target = row["target"]
+    if not isinstance(target, str) or target not in prizes:
+        return "target is not published"
+    claimant, address, pr_number, delta = (
+        row["claimant"],
+        row["address"],
+        row["pr"],
+        row["delta"],
+    )
+    prize = row["prize_sats"]
+    if not (
+        isinstance(claimant, str)
+        and re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", claimant)
+        and (address is None or isinstance(address, str) and bool(address))
+        and isinstance(pr_number, str)
+        and pr_number.isdigit()
+        and isinstance(delta, str)
+    ):
+        return "non-string field"
+    pr = prs.get(pr_number)
+    payout_lines = re.findall(
+        r"(?im)^[ \t]*payout(?: address)?[ \t]*:[ \t]*(\S+)[ \t\r]*$",
+        pr["body"] if pr else "",
+    )
+    addresses = {
+        value.lower() if value.lower().startswith(("bc1", "tb1", "bcrt1")) else value
+        for value in payout_lines
+        if re.fullmatch(
+            r"(?:bc1|tb1|bcrt1)[a-zA-Z0-9]{20,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34}",
+            value,
+        )
+    }
+    expected_address = next(iter(addresses)) if len(addresses) == 1 else None
+    checks = (
+        (row["status"] == "unpaid", "not unpaid"),
+        (type(prize) is int, "bad prize"),
+        (prize == prizes[target], "prize is not the published one"),
+        (pr and claimant == pr["author"], "claimant is not the PR author"),
+        (
+            address == expected_address,
+            "address is not the single payout address in the PR",
+        ),
+        (delta in deltas, "delta is not a claimed delta"),
+    )
+    return next((why for ok, why in checks if not ok), None)
+
+
+def check_new_rows(room, tail, old, trusted):
+    """Exit unless TAIL is a run of new unpaid awards that TRUSTED data backs.
+
+    TRUSTED is (prizes, prs, deltas); OLD is the current ledger's bytes.
+    """
     if tail and not tail.endswith(b"\n"):
         sys.exit(f"{room}/ledger.jsonl: appended rows must end with a newline")
+    seen = {json.loads(line)["target"] for line in old.splitlines()}
     for line in tail.splitlines():
         try:
             row = json.loads(line)
         except ValueError:
             sys.exit(f"{room}/ledger.jsonl: appended row is not JSON")
-        ok = isinstance(row, dict) and set(row) == LEDGER_KEYS
-        ok = ok and row["status"] == "unpaid" and isinstance(row["prize_sats"], int)
-        if not ok:
-            sys.exit(f"{room}/ledger.jsonl: appended row is not a new unpaid award")
+        problem = row_problem(row, *trusted)
+        if problem is None and not row["delta"].startswith(f"{room}/deltas/"):
+            problem = "delta belongs to a different room"
+        if problem is None and row["target"] in seen:
+            problem = "target already awarded"
+        if problem:
+            sys.exit(f"{room}/ledger.jsonl: rejected appended row: {problem}")
+        seen.add(row["target"])
 
 
-def publish(src, root="."):
+def append_ledger(room, staged, root, claims):
+    """Replace ROOM's ledger with STAGED if it validly extends it; True if changed."""
+    current = os.path.join(root, room, "ledger.jsonl")
+    old = b""
+    if os.path.exists(current):
+        with open(current, "rb") as f:
+            old = f.read()
+    with open(staged, "rb") as f:
+        new = f.read()
+    if not new.startswith(old):
+        sys.exit(f"{room}/ledger.jsonl: staged ledger must extend the current one")
+    if new == old:
+        return False
+    prizes = read_prizes(room, os.path.join(root, room, "targets.csv"))
+    check_new_rows(room, new[len(old) :], old, (prizes, *claims))  # noqa: E203
+    temp = f"{current}.tmp"
+    with open(temp, "wb") as f:
+        f.write(new)
+    os.replace(temp, current)
+    return True
+
+
+def publish(src, resolved, root="."):
     """Validate the staged files in SRC and append their new rows under ROOT.
 
     SRC came from a job that ran rezzy, so treat it as untrusted: accept only
     `complete`, `errors.txt` and <ROOM>/ledger.jsonl regular files, for rooms
     that exist here, and only as append-only extensions of the current ledger
-    consisting of new unpaid rows. Returns (rooms changed, sanitized errors).
+    consisting of new unpaid rows that the RESOLVED metadata and the published
+    target table back (prize, claimant, address, delta, no repeated target).
+    Returns (rooms changed, sanitized errors).
     """
     if not os.path.isfile(os.path.join(src, "complete")):
         sys.exit(f"{src}: missing completion marker; the replay did not finish")
+    trusted = trusted_claims(resolved)
+    old_processed = load_processed(os.path.join(root, PROCESSED_PATH))
+    if old_processed != resolved["processed"]:
+        sys.exit("processed claim state changed after resolution")
+    processed_path = os.path.join(src, "processed.json")
+    if not os.path.isfile(processed_path) or os.path.islink(processed_path):
+        sys.exit(f"{processed_path}: missing or invalid processed claim state")
+    staged_processed = load_processed(processed_path)
+    if staged_processed[: len(old_processed)] != old_processed:
+        sys.exit("staged processed claim state does not extend the current state")
+    candidates = {}
+    for commit, claim in resolved["history"]:
+        entry = resolved["claims"].get(claim_key(commit, claim))
+        if entry and entry["error"] is None:
+            candidates[claim] = claim.replace(".claim.json", ".delta.jsonl.b64")
+    for entry in staged_processed[len(old_processed) :]:  # noqa: E203
+        if candidates.get(entry["claim"]) != entry["delta"]:
+            sys.exit("staged processed state contains a claim not resolved in this run")
     updates = []
     for name in sorted(os.listdir(src)):
         path = os.path.join(src, name)
         if os.path.islink(path):
             sys.exit(f"{path}: symlinks are not accepted")
-        if name in ("complete", "errors.txt"):
+        if name in ("complete", "errors.txt", "processed.json"):
             if not os.path.isfile(path):
                 sys.exit(f"{path}: expected a regular file")
             continue
@@ -381,25 +581,12 @@ def publish(src, root="."):
         if not os.path.isfile(os.path.join(root, name, "targets.csv")):
             sys.exit(f"{name}: not a published bounty room here")
         updates.append((name, ledger))
-    changed = []
-    for room, ledger in updates:
-        current = os.path.join(root, room, "ledger.jsonl")
-        old = b""
-        if os.path.exists(current):
-            with open(current, "rb") as f:
-                old = f.read()
-        with open(ledger, "rb") as f:
-            new = f.read()
-        if not new.startswith(old):
-            sys.exit(f"{room}/ledger.jsonl: staged ledger must extend the current one")
-        if new == old:
-            continue
-        check_new_rows(room, new[len(old) :])  # noqa: E203
-        temp = f"{current}.tmp"
-        with open(temp, "wb") as f:
-            f.write(new)
-        os.replace(temp, current)
-        changed.append(room)
+    changed = [r for r, ledger in updates if append_ledger(r, ledger, root, trusted)]
+    if staged_processed != old_processed:
+        temp = f"{os.path.join(root, PROCESSED_PATH)}.tmp"
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump(staged_processed, f)
+        os.replace(temp, os.path.join(root, PROCESSED_PATH))
     return changed, sanitized_errors(os.path.join(src, "errors.txt"))
 
 
@@ -408,7 +595,7 @@ def sanitized_errors(path):
     if not os.path.isfile(path):
         return []
     with open(path, encoding="utf-8", errors="replace") as f:
-        lines = f.read().splitlines()[:MAX_ERROR_LINES]
+        lines = f.read(MAX_ERROR_BYTES).splitlines()[:MAX_ERROR_LINES]
     clean = (re.sub(r"[^\x20-\x7e]", "?", line)[:500] for line in lines)
     return ["claim error: " + line for line in clean]
 
@@ -416,7 +603,8 @@ def sanitized_errors(path):
 def cmd_resolve(args):
     """Phase 1: write the resolved metadata document."""
     remote = Remote(args.before, args.repo)
-    doc = Resolver(remote).run(remote.history())
+    processed = load_processed()
+    doc = Resolver(remote).run(remote.history(processed), processed)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(doc, f)
 
@@ -425,13 +613,14 @@ def cmd_replay(args):
     """Phase 2: replay claims with rezzy and stage the resulting ledgers."""
     resolved = load_resolved(args.resolved)
     with tempfile.TemporaryDirectory() as tmp:
-        errors = Awarder(Local(), resolved, tmp).run()
-    stage(args.out, errors)
+        awarder = Awarder(Local(), resolved, tmp)
+        errors = awarder.run()
+    stage(args.out, errors, awarder.completed)
 
 
 def cmd_publish(args):
     """Phase 3: validate staged ledgers into the checkout; write the error list."""
-    changed, errors = publish(args.src)
+    changed, errors = publish(args.src, load_resolved(args.resolved))
     with open(args.errors, "w", encoding="utf-8") as f:
         f.write("".join(e + "\n" for e in errors))
     print(f"updated ledgers: {', '.join(changed) or 'none'}")
@@ -452,6 +641,7 @@ def main(argv=None):
     s.set_defaults(f=cmd_replay)
     s = sp.add_parser("publish")
     s.add_argument("--src", required=True, metavar="DIR")
+    s.add_argument("--resolved", required=True, metavar="FILE")
     s.add_argument("--errors", required=True, metavar="FILE")
     s.set_defaults(f=cmd_publish)
     args = ap.parse_args(argv)

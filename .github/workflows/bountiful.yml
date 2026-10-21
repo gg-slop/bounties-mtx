@@ -110,13 +110,20 @@ jobs:
         with:
           name: award-out
           path: ${{ runner.temp }}/award-out
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: resolved
+          path: ${{ runner.temp }}/resolved
       - name: Validate the staged ledgers
         run: |
           set -euo pipefail
           # Standard library only, run from the checked-out master. Accepts
-          # nothing but append-only unpaid ledger rows for published rooms.
+          # nothing but append-only unpaid ledger rows for published rooms that
+          # the resolve job's metadata and the target tables back.
           python3 -I scripts/bounty_award.py publish \
-            --src "$RUNNER_TEMP/award-out" --errors "$RUNNER_TEMP/claim-errors.txt"
+            --src "$RUNNER_TEMP/award-out" \
+            --resolved "$RUNNER_TEMP/resolved/resolved.json" \
+            --errors "$RUNNER_TEMP/claim-errors.txt"
       - name: Commit and push ledger updates
         env:
           GH_TOKEN: ${{ github.token }}
@@ -129,6 +136,9 @@ jobs:
           for ledger in */ledger.jsonl; do
             git add -- "$ledger"
           done
+          if [[ -f bounty-processed.json ]]; then
+            git add -- bounty-processed.json
+          fi
           if ! git diff --cached --quiet; then
             git -c user.name=claim-bot -c user.email=bot@invalid \
               commit -qm "Record bounty awards"

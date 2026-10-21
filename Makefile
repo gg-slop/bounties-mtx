@@ -20,7 +20,7 @@ format:	##H Format code
 
 .PHONY: test
 test:	##H Run unit tests
-	python3 -m pytest -q tests
+	python3 -m unittest discover -s tests
 
 
 .PHONY: lint
