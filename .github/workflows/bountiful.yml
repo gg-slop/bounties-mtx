@@ -1,4 +1,5 @@
-name: bounty-merge
+---
+name: "DAG Hunt"
 on:
   push:
     branches: [master]
@@ -11,7 +12,7 @@ env:
   # The commit of rezzy whose C ABI checks every event; bump it deliberately.
   REZZY_SHA: 48adad07e9ebe63a377568e89da574e502a284f4
 jobs:
-  award:
+  check:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -128,7 +129,7 @@ jobs:
               continue
             fi
             if [[ "$pr" == "__NONE__" ]]; then
-              if python3 -I scripts/bounty.py merge "$claim" --no-awards \
+              if env -u GH_TOKEN python3 -I scripts/bounty.py merge "$claim" --no-awards \
                 --trusted-targets "$trusted_targets" \
                 --trusted-base-lock "$trusted_base_lock" "${prior_args[@]}"; then
                 printf '%s\n' "$delta" >> "$prior_file"
@@ -154,7 +155,7 @@ jobs:
               blocked_rooms[$room]=1
               continue
             fi
-            if python3 -I scripts/bounty.py merge "$claim" --pr "$pr" \
+            if env -u GH_TOKEN python3 -I scripts/bounty.py merge "$claim" --pr "$pr" \
               --claimant "$who" --pr-body "$body" \
               --trusted-targets "$trusted_targets" \
               --trusted-base-lock "$trusted_base_lock" "${prior_args[@]}"; then

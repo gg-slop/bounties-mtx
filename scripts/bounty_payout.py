@@ -13,6 +13,15 @@ BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 BECH32_GEN = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
 BASE58_VERSIONS = {0x00, 0x05, 0x6F, 0xC4}  # mainnet and testnet P2PKH / P2SH
+# Each bounty room is pinned to one payout network. Add new rooms explicitly.
+ROOM_NETWORKS = {"L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI": "main"}
+
+
+def room_network(room):
+    """Payout network configured for ROOM."""
+    if room not in ROOM_NETWORKS:
+        sys.exit(f"no payout network configured for room {room}")
+    return ROOM_NETWORKS[room]
 
 
 def bech32_polymod(values):
@@ -62,14 +71,14 @@ def valid_bech32(address):
 
 def valid_base58(address):
     """Whether ADDRESS is a checksum-correct base58check P2PKH or P2SH address."""
+    pad = len(address) - len(address.lstrip("1"))
     number = 0
-    for char in address:
+    for char in address[pad:]:
         if char not in BASE58:
             return False
         number = number * 58 + BASE58.index(char)
-    raw = number.to_bytes(25, "big") if number.bit_length() <= 200 else b""
-    pad = len(address) - len(address.lstrip("1"))
-    if len(raw) != 25 or raw[:pad] != b"\x00" * pad:
+    raw = b"\x00" * pad + number.to_bytes((number.bit_length() + 7) // 8, "big")
+    if len(raw) != 25:
         return False
     digest = hashlib.sha256(hashlib.sha256(raw[:21]).digest()).digest()
     return raw[21:] == digest[:4] and raw[0] in BASE58_VERSIONS
@@ -79,9 +88,32 @@ def valid_address(address):
     """Whether ADDRESS looks like, and checksums as, a Bitcoin address."""
     if not isinstance(address, str):
         return False
-    if address.lower().startswith(("bc1", "tb1", "bcrt1")):
+    if is_bech32(address):
         return valid_bech32(address)
     return 26 <= len(address) <= 35 and valid_base58(address)
+
+
+def is_bech32(address):
+    """Whether ADDRESS has a bech32 human-readable prefix."""
+    return address.lower().startswith(("bc1", "tb1", "bcrt1"))
+
+
+def normalize_address(address):
+    """Lowercase bech32 addresses (case-insensitive); leave base58 unchanged."""
+    return address.lower() if is_bech32(address) else address
+
+
+def network_of(address):
+    """Network a valid ADDRESS pays on: main, test or regtest."""
+    if is_bech32(address):
+        hrp = address.lower().rpartition("1")[0]
+        return {"bc": "main", "tb": "test"}.get(hrp, "regtest")
+    return "main" if valid_base58(address) and address[0] in "13" else "test"
+
+
+def valid_payout_address(address, network="main"):
+    """Validate an address for this room's configured payout network."""
+    return valid_address(address) and network_of(address) == network
 
 
 def read_json(path):
@@ -114,9 +146,10 @@ def unpaid_rows(room, overrides):
             if row["status"] != "unpaid":
                 continue
             address = overrides.get(row["claimant"], row.get("address"))
-            if address is None or not valid_address(address):
+            if address is None or not valid_payout_address(address, room_network(room)):
                 noaddr.append((row, row["prize_sats"]))
                 continue
+            address = normalize_address(address)
             by_address.setdefault(address, []).append(row)
     return by_address, noaddr
 
@@ -174,6 +207,13 @@ def cmd_payout(args):
         )
     if not pay:
         sys.exit("nothing to pay")
+    networks = {network_of(address) for address in pay}
+    if len(networks) > 1:
+        sys.exit(
+            f"batch mixes payout networks ({', '.join(sorted(networks))}); "
+            "one wallet cannot pay them. Fix the addresses with "
+            "'address' or --address"
+        )
     print_payout(pay, args, pending_path, included)
 
 
@@ -250,7 +290,7 @@ def cmd_address(args):
     """Record a payout address on a claimant's unpaid, address-less ledger rows."""
     if not ROOM.fullmatch(args.room):
         sys.exit(f"invalid room ID {args.room!r}")
-    if not valid_address(args.payout):
+    if not valid_payout_address(args.payout, room_network(args.room)):
         sys.exit(f"{args.payout!r} is not a Bitcoin address")
     if os.path.exists(f"{args.room}/payout-pending.json"):
         sys.exit("a payout batch is pending; record it as paid or replace it first")
@@ -266,7 +306,7 @@ def cmd_address(args):
     if not changed:
         sys.exit(f"{args.claimant}: no unpaid rows without an address")
     for row in changed:
-        row["address"] = args.payout
+        row["address"] = normalize_address(args.payout)
     temp_path = f"{ledger_path}.tmp"
     with open(temp_path, "wb") as f:
         for row in ledger:

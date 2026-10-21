@@ -50,14 +50,16 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
 3. Put recovered events, one JSON event per line, in
    `<ROOM>/submissions/<username>.jsonl`, then run
    `python3 scripts/bounty.py encode <ROOM>/submissions/<username>.jsonl`. Use a
-   username that is a valid file name: your GitHub username, or your Matrix ID
-   with the `:` changed to `+`. For example `alice` stays `alice`, and
-   `@alice:matrix.org` becomes `@alice+matrix.org`. Letters, digits, `.`, `-`,
-   `_`, `@`, `+` and `=` are allowed; `:` and `/` are not, and a name with a `.`
-   must not end in digits (`.45` would read as a part number). A Matrix server
-   name never contains `+`, so the last `+` is always the separator. A later
-   claim adds `-2`: `alice-2.jsonl` becomes `alice-2.00.jsonl.b64`. The `.00` is
-   a part number, not a claim counter.
+   username that is a valid file name: your GitHub username, or, if it is
+   filename-safe, your Matrix ID with the `:` changed to `+`. For example
+   `alice` stays `alice`, and `@alice:matrix.org` becomes `@alice+matrix.org`.
+   Letters, digits, `.`, `-`, `_`, `@`, `+` and `=` are allowed; `:` and `/` are
+   not, and a name with a `.` must not end in digits (`.45` would read as a part
+   number). A Matrix server name never contains `+`, so the last `+` is always
+   the separator. Matrix IDs that cannot be written this way (IPv6 server names,
+   or any `/` or other disallowed character) are not supported: use your GitHub
+   username. A later claim adds `-2`: `alice-2.jsonl` becomes
+   `alice-2.00.jsonl.b64`. The `.00` is a part number, not a claim counter.
 4. Commit all generated parts, from `<username>.00.jsonl.b64` onward, then open
    the PR. Never commit plaintext `.jsonl`. Base64 is an encoding, not privacy:
    anyone can decode it.

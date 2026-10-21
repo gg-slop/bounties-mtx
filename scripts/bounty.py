@@ -672,7 +672,7 @@ def parse_submission(path, base):
                 if err:
                     errs.append(f"line {n}: {err}")
                 else:
-                    sub[checked["event_id"]] = checked
+                    add_to_pool(sub, {checked["event_id"]: checked})
     except ValueError as exc:  # bad base64
         errs.append(f"invalid base64: {exc}")
     return sub, errs
@@ -713,7 +713,7 @@ def dangling_links(base, delta, merged):
 PAYOUT_LINE = re.compile(r"(?im)^[ \t]*payout(?: address)?[ \t]*:[ \t]*(\S+)[ \t\r]*$")
 
 
-def payout_from_body(path):
+def payout_from_body(path, network="main"):
     """The one Bitcoin address on a "Payout: <address>" line of the PR body.
 
     Lines that are not address-shaped (such as the template's placeholder) are
@@ -721,11 +721,15 @@ def payout_from_body(path):
     claim is still recorded, but nothing can be paid yet.
     """
     with open(path, encoding="utf-8", errors="replace") as f:
-        found = {x for x in PAYOUT_LINE.findall(f.read()) if _payout.valid_address(x)}
+        found = {
+            x
+            for x in PAYOUT_LINE.findall(f.read())
+            if _payout.valid_payout_address(x, network)
+        }
     if len(found) != 1:
         print("no single valid 'Payout: <address>' line in the PR description")
         return None
-    return found.pop()
+    return _payout.normalize_address(found.pop())
 
 
 def verified_submission(path, base):
@@ -897,7 +901,11 @@ def cmd_merge(args):
         return
     if not args.claimant:
         sys.exit("--claimant is required unless --no-awards is set")
-    args.payout = payout_from_body(args.pr_body) if args.pr_body else None
+    args.payout = (
+        payout_from_body(args.pr_body, _payout.room_network(room))
+        if args.pr_body
+        else None
+    )
     append_awards(args, claim, tg, closed)
 
 
