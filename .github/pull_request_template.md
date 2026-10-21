@@ -1,13 +1,13 @@
 # Which bounty?
 
 How to claim, what CI does, closure and payout rules: the `README.md` in the
-room's folder (`<ROOM>/`, the 43-character room ID).
+room's folder (`rooms/<ROOM>/`, the 43-character room ID).
 
 Payout: bc1q…
 
 ## Checklist
 
-- [ ] Only your submission in `<ROOM>/submissions/` changed:
+- [ ] Only your submission in `rooms/<ROOM>/submissions/` changed:
       `<username>.00.jsonl.b64` (more `.NN` parts only if it exceeds 50,000
       lines)
 - [ ] `<username>` is unique and a valid file name: your GitHub username, or, if

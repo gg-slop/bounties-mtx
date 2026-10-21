@@ -3,12 +3,12 @@
 Originally promised at 3 satoshi per completed event at approximately 6,500
 events, depth 91,136. The published budget is 20,000 sats.
 
-The fixed four-column CSV in `<ROOM>/targets.csv` covers 2,235 unique initial
-missing event IDs referenced by the base DAG
+The fixed four-column CSV in `rooms/<ROOM>/targets.csv` covers 2,235 unique
+initial missing event IDs referenced by the base DAG
 (`res/<ROOM>/merged-…-v12-d1-71756.jsonl`) or by event relations in that DAG.
 The room base is selected when the target table is first published and pinned in
-`<ROOM>/base.lock` by its path, fingerprint, and budget. Each room can set its
-own budget with `scripts/bounty.py targets <ROOM> --budget SATS`, which is
+`rooms/<ROOM>/base.lock` by its path, fingerprint, and budget. Each room can set
+its own budget with `scripts/bounty.py targets <ROOM> --budget SATS`, which is
 required when first publishing; later runs read it from the lock. A deeper
 merged DAG added later does not silently replace the published base.
 Regenerating the table for a different base invalidates existing claims; they
@@ -46,11 +46,11 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
    `res/<ROOM>/`, which is git-ignored.
 2. Find missing IDs with `rezzy inspect gaps -i res/<ROOM>/merged-….jsonl`, or
    any tool of your own (see _Running the tools locally_ for installing
-   `rezzy`). Targets and prizes are in `<ROOM>/targets.csv`.
+   `rezzy`). Targets and prizes are in `rooms/<ROOM>/targets.csv`.
 3. Put recovered events, one JSON event per line, in
-   `<ROOM>/submissions/<username>.jsonl`, then run
-   `python3 scripts/bounty.py encode <ROOM>/submissions/<username>.jsonl`. Use a
-   username that is a valid file name: your GitHub username, or, if it is
+   `rooms/<ROOM>/submissions/<username>.jsonl`, then run
+   `python3 scripts/bounty.py encode rooms/<ROOM>/submissions/<username>.jsonl`.
+   Use a username that is a valid file name: your GitHub username, or, if it is
    filename-safe, your Matrix ID with the `:` changed to `+`. For example
    `alice` stays `alice`, and `@alice:matrix.org` becomes `@alice+matrix.org`.
    Letters, digits, `.`, `-`, `_`, `@`, `+` and `=` are allowed; `:` and `/` are
@@ -73,8 +73,9 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
 
 - CI verifies each event ID against its room version's reference hash, drops
   events already in the base, and writes
-  `<ROOM>/deltas/<digest>.delta.jsonl.b64` (only events absent from the base,
-  also base64) plus `<digest>.claim.json` (closed targets and dangling links).
+  `rooms/<ROOM>/deltas/<digest>.delta.jsonl.b64` (only events absent from the
+  base, also base64) plus `<digest>.claim.json` (closed targets and dangling
+  links).
 - For same-repository PRs, CI replaces the encoded submission with its delta and
   keeps the submission as a 14-day artifact. For fork PRs, the source branch
   retains the encoded submission; a maintainer runs `scripts/bounty.py build`
@@ -113,7 +114,7 @@ unset or wrong, the script exits without accepting the claim.
   2,235 targets: 2,120 rows pay 9 sats and 115 rows pay 8 sats. Integer rounding
   uses table order, and the total is exact.
 - Each target pays once, to the first **merged** delta that closes it.
-  `<ROOM>/ledger.jsonl` (`scripts/bounty.py merge`) records the target,
+  `rooms/<ROOM>/ledger.jsonl` (`scripts/bounty.py merge`) records the target,
   claimant, PR, delta, prize, and unpaid status.
 - Later deltas covering an already-awarded target pay nothing for it.
 - The row order is fixed and published before claims open; it cannot depend on

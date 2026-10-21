@@ -8,7 +8,7 @@ name: "DAG Hunt"
 on:
   push:
     branches: [master]
-    paths: ["*/deltas/*.claim.json"]
+    paths: ["rooms/*/deltas/*.claim.json"]
 concurrency:
   group: bounty-ledger
   cancel-in-progress: false
@@ -133,7 +133,7 @@ jobs:
           export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           shopt -s nullglob
-          for ledger in */ledger.jsonl; do
+          for ledger in rooms/*/ledger.jsonl; do
             git add -- "$ledger"
           done
           if [[ -f bounty-processed.json ]]; then

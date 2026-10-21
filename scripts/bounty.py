@@ -3,12 +3,13 @@
 # PYTHON_ARGCOMPLETE_OK
 """Backfill bounty tooling: targets, submission -> delta, ledger payouts.
 
-  bounty.py targets ROOM [--budget SATS]    -> ROOM/targets.csv
-  bounty.py build   SUBMISSION              -> ROOM/deltas/<digest>.delta.jsonl.b64
+  bounty.py targets ROOM [--budget SATS]    -> rooms/ROOM/targets.csv
+  bounty.py build   SUBMISSION              -> rooms/ROOM/deltas/
+                                               <digest>.delta.jsonl.b64
                                                + <digest>.claim.json
   bounty.py merge   CLAIM --claimant NAME [--pr N]
                                             -> re-verifies, appends
-                                               ROOM/ledger.jsonl
+                                               rooms/ROOM/ledger.jsonl
   bounty.py payout  ROOM [--min SATS] [--fee-rate N] [--change ADDR]
                                             [--replace]
                                             -> prints the unsigned payout txn
@@ -20,8 +21,9 @@
                                     (default files: from res/*/*.jsonl.b64)
 
 ROOM is the 43-char room ID. The bounty a claim targets comes from where it
-lives: ROOM/submissions/x.jsonl.b64 (build) or ROOM/deltas/x.claim.json (merge).
-The published base DAG, fingerprint, and budget are pinned in ROOM/base.lock;
+lives: rooms/ROOM/submissions/x.jsonl.b64 (build) or
+rooms/ROOM/deltas/x.claim.json (merge).
+The published base DAG, fingerprint, and budget are pinned in rooms/ROOM/base.lock;
 before publication, targets selects the deepest matching merged DAG under
 res/ROOM.
 The payout address is a "Payout: <address>" line in the PR description (merge
@@ -304,7 +306,7 @@ def claim_agrees(claim, room, path, base, base_name):
     return all(
         [
             claim.get("room") == room,
-            claim.get("delta") == f"{room}/deltas/{name}",
+            claim.get("delta") == f"{room_dir(room)}/deltas/{name}",
             claim.get("delta_sha256_16") == name.split(".", 1)[0],
             claim.get("base_sha256") == base_fingerprint(base),
             base_name is None or claim.get("base") == base_name,
@@ -345,6 +347,7 @@ def combine_pools(*pools):
 
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
+ROOMS_DIR = "rooms"
 # A name is dot-separated parts of [A-Za-z0-9_@+=-]; if it has a dot, its last
 # part must contain a non-digit, so a trailing ".NN" can only be a part number.
 _NAME_PART = r"[A-Za-z0-9_@+=-]+"
@@ -354,11 +357,18 @@ SUBMISSION_NAME = re.compile(
 )
 
 
+def room_dir(room):
+    """Repo-relative directory holding ROOM's data."""
+    return f"{ROOMS_DIR}/{room}"
+
+
 def room_of(path):
-    """Room ID in ROOM/<kind>/<file>, the layout of submissions and deltas."""
+    """Room ID in rooms/ROOM/<kind>/<file>, the layout of submissions and deltas."""
     room = os.path.abspath(path).split(os.sep)[-3]
     if not ROOM.fullmatch(room):
-        sys.exit(f"{path}: expected ROOM/<submissions|deltas>/<file>, got {room!r}")
+        sys.exit(
+            f"{path}: expected rooms/ROOM/<submissions|deltas>/<file>, got {room!r}"
+        )
     return room
 
 
@@ -402,7 +412,7 @@ BASE_LOCK_NAME = "base.lock"
 
 def base_lock_path(room):
     """Path to the published room base name, fingerprint, and budget."""
-    return f"{room}/{BASE_LOCK_NAME}"
+    return f"{room_dir(room)}/{BASE_LOCK_NAME}"
 
 
 def read_base_lock(room):
@@ -465,7 +475,7 @@ def read_table(path, room=None):
 
 def targets_file(room):
     """Published target table for ROOM; exits if there is no such bounty."""
-    path = f"{room}/targets.csv"
+    path = f"{room_dir(room)}/targets.csv"
     if not os.path.exists(path):
         sys.exit(f"no published bounty for room {room}")
     return path
@@ -607,7 +617,7 @@ def check_published_base(room, base_name, base, table):
 
 
 def cmd_targets(args):
-    """Write ROOM/targets.csv with ranks and prizes."""
+    """Write rooms/ROOM/targets.csv with ranks and prizes."""
     lock = read_base_lock(args.room)
     budget = args.budget if args.budget is not None else lock[2] if lock else None
     if budget is None:
@@ -622,7 +632,7 @@ def cmd_targets(args):
     base = load(base_name)
     rows = rank_targets(base)
     p = prizes(len(rows), budget)
-    path = f"{args.room}/targets.csv"
+    path = f"{room_dir(args.room)}/targets.csv"
     target_rows = [{**r, "prize_sats": p[i]} for i, r in enumerate(rows)]
     published = {"targets": target_rows}
     if os.path.exists(path):
@@ -645,7 +655,7 @@ def cmd_targets(args):
             write_base_lock(args.room, base_name, base, budget)
         print(f"target table verified for {base_name}")
         return
-    os.makedirs(args.room, exist_ok=True)
+    os.makedirs(room_dir(args.room), exist_ok=True)
     write_table(path, published)
     write_base_lock(args.room, base_name, base, budget)
     if p:
@@ -768,7 +778,7 @@ def cmd_build(args):
     base = load(base_name)
     table = read_table(targets_file(room))
     check_published_base(room, base_name, base, table)
-    out = f"{room}/deltas"
+    out = f"{room_dir(room)}/deltas"
     sub = verified_submission(args.submission, base)
     merged = load_deltas(
         out,
@@ -810,7 +820,7 @@ def awarded_targets(ledger):
         return {orjson.loads(line)["target"] for line in f}
 
 
-DELTA_PATH = r"{room}/deltas/[0-9a-f]{{16}}\.delta\.jsonl\.b64"
+DELTA_PATH = r"{room_dir}/deltas/[0-9a-f]{{16}}\.delta\.jsonl\.b64"
 
 
 def claim_base_name(args, room, claim):
@@ -822,8 +832,10 @@ def claim_base_name(args, room, claim):
     if not match:
         sys.exit(f"{args.claim}: bad claim filename")
     digest = match.group(1)
-    expected_delta = f"{room}/deltas/{digest}.delta.jsonl.b64"
-    if not re.fullmatch(DELTA_PATH.format(room=room), claim.get("delta", "")):
+    expected_delta = f"{room_dir(room)}/deltas/{digest}.delta.jsonl.b64"
+    if not re.fullmatch(
+        DELTA_PATH.format(room_dir=re.escape(room_dir(room))), claim.get("delta", "")
+    ):
         sys.exit(f"{args.claim}: bad delta path {claim.get('delta')!r}")
     if claim["delta"] != expected_delta:
         sys.exit(f"{args.claim}: delta must be its sibling {expected_delta!r}")
@@ -865,7 +877,7 @@ def check_claim_delta(claim, table, base_name):
 
 def append_awards(args, claim, tg, targets):
     """Append an unpaid ledger row for each of TARGETS not already awarded."""
-    led = f"{room_of(args.claim)}/ledger.jsonl"
+    led = f"{room_dir(room_of(args.claim))}/ledger.jsonl"
     with open(led, "ab") as f:
         for t in sorted(targets - awarded_targets(led)):
             row = {
@@ -892,7 +904,9 @@ def cmd_merge(args):
     tg = {x["event_id"]: x for x in table["targets"]}
     current = load_delta(claim["delta"], base)
     for path in args.prior_delta or []:
-        if not re.fullmatch(DELTA_PATH.format(room=room), path):
+        if not re.fullmatch(
+            DELTA_PATH.format(room_dir=re.escape(room_dir(room))), path
+        ):
             sys.exit(f"bad prior delta path {path!r}")
     prior = load_deltas(
         os.path.dirname(claim["delta"]),

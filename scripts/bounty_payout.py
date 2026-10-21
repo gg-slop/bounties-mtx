@@ -8,6 +8,7 @@ import shlex
 import sys
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
+ROOMS_DIR = "rooms"
 
 
 def _orjson():
@@ -143,7 +144,7 @@ def unpaid_rows(room, overrides):
     """Return unpaid ledger rows grouped by their effective payout address."""
     by_address = {}
     noaddr = []
-    path = f"{room}/ledger.jsonl"
+    path = f"{ROOMS_DIR}/{room}/ledger.jsonl"
     if not os.path.exists(path):
         sys.exit(f"no ledger for room {room}")
     with open(path, "rb") as f:
@@ -192,7 +193,7 @@ def cmd_payout(args):
     """Print the unsigned payout transaction for a room's unpaid prizes."""
     if not ROOM.fullmatch(args.room):
         sys.exit(f"invalid room ID {args.room!r}")
-    pending_path = f"{args.room}/payout-pending.json"
+    pending_path = f"{ROOMS_DIR}/{args.room}/payout-pending.json"
     if os.path.exists(pending_path) and not args.replace:
         sys.exit(
             f"pending payout already exists at {pending_path}; "
@@ -258,11 +259,11 @@ def cmd_paid(args):
         sys.exit(f"invalid room ID {args.room!r}")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", args.txid):
         sys.exit("transaction ID must be 64 hexadecimal characters")
-    pending_path = f"{args.room}/payout-pending.json"
+    pending_path = f"{ROOMS_DIR}/{args.room}/payout-pending.json"
     if not os.path.exists(pending_path):
         sys.exit(f"no pending payout for room {args.room}")
     pending = read_json(pending_path)
-    ledger_path = f"{args.room}/ledger.jsonl"
+    ledger_path = f"{ROOMS_DIR}/{args.room}/ledger.jsonl"
     if not os.path.exists(ledger_path):
         sys.exit(f"no ledger for room {args.room}")
 
@@ -298,9 +299,9 @@ def cmd_address(args):
         sys.exit(f"invalid room ID {args.room!r}")
     if not valid_payout_address(args.payout, room_network(args.room)):
         sys.exit(f"{args.payout!r} is not a Bitcoin address")
-    if os.path.exists(f"{args.room}/payout-pending.json"):
+    if os.path.exists(f"{ROOMS_DIR}/{args.room}/payout-pending.json"):
         sys.exit("a payout batch is pending; record it as paid or replace it first")
-    ledger_path = f"{args.room}/ledger.jsonl"
+    ledger_path = f"{ROOMS_DIR}/{args.room}/ledger.jsonl"
     if not os.path.exists(ledger_path):
         sys.exit(f"no ledger for room {args.room}")
     with open(ledger_path, "rb") as f:
