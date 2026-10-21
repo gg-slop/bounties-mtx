@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pylint: disable=too-many-lines
 # PYTHON_ARGCOMPLETE_OK
 """Backfill bounty tooling: targets, submission -> delta, ledger payouts.
 
@@ -384,6 +385,37 @@ def submission_base(path, override=None):
 
 
 TABLE_COLS = ("event_id", "n_refs", "min_child_depth", "prize_sats")
+PUBLISHED_BUDGET_SATS = 20_000
+BASE_LOCK_NAME = "base.lock"
+
+
+def base_lock_path(room):
+    """Path to the published room base name and fingerprint."""
+    return f"{room}/{BASE_LOCK_NAME}"
+
+
+def read_base_lock(room):
+    """Return the published (base name, fingerprint), if the lock exists."""
+    path = base_lock_path(room)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="ascii") as f:
+            name, fingerprint = f.read().splitlines()
+    except (OSError, ValueError):
+        sys.exit(f"{path}: expected a base path and SHA-256 on separate lines")
+    if (
+        not re.fullmatch(rf"res/{room}/merged-{room}-[A-Za-z0-9._-]+\.jsonl", name)
+        or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+    ):
+        sys.exit(f"{path}: invalid base lock")
+    return name, fingerprint
+
+
+def write_base_lock(room, base_name, base):
+    """Pin the published room base and its canonical event-set fingerprint."""
+    with open(base_lock_path(room), "w", encoding="ascii") as f:
+        f.write(f"{base_name}\n{base_fingerprint(base)}\n")
 
 
 def write_table(path, table):
@@ -410,7 +442,12 @@ def read_table(path, room=None):
         for record in records[1:]
     ]
     room = room or os.path.basename(os.path.dirname(path))
-    return {"base": find_base(room), "targets": rows}
+    lock = read_base_lock(room)
+    if lock:
+        base = find_base(room, os.path.basename(lock[0]).removesuffix(".jsonl"))
+    else:
+        base = find_base(room)
+    return {"base": base, "targets": rows}
 
 
 def targets_file(room):
@@ -430,7 +467,8 @@ def relation_ids(e):
     ids = [rel.get("event_id")]
     if isinstance(reply, dict):
         ids.append(reply.get("event_id"))
-    return [i for i in dict.fromkeys(ids) if isinstance(i, str) and i.startswith("$")]
+    valid = (i for i in ids if isinstance(i, str) and i.startswith("$"))
+    return list(dict.fromkeys(valid))
 
 
 def links(e):
@@ -532,10 +570,16 @@ def base_fingerprint(base):
 
 
 def check_published_base(room, base_name, base, table):
-    """Require the target descriptors to match the room's selected base."""
-    expected_base = find_base(room)
+    """Require the table and claim to use the base pinned at publication."""
+    lock = read_base_lock(room)
+    if lock is None:
+        sys.exit(f"{base_lock_path(room)} is missing; publish the base lock first")
+    expected_base, expected_fingerprint = lock
     if expected_base != base_name or table.get("base") != base_name:
-        sys.exit(f"claim must use the room base {expected_base!r}")
+        sys.exit(f"claim must use the published room base {expected_base!r}")
+    fingerprint = base_fingerprint(base)
+    if fingerprint != expected_fingerprint:
+        sys.exit(f"{base_name}: contents do not match the published base lock")
     expected = rank_targets(base)
     actual = [
         {key: row[key] for key in ("event_id", "n_refs", "min_child_depth")}
@@ -544,16 +588,17 @@ def check_published_base(room, base_name, base, table):
     if actual != expected:
         sys.exit(f"{targets_file(room)} does not match the selected base DAG")
     paid = [row["prize_sats"] for row in table["targets"]]
-    if paid != prizes(len(paid), sum(paid)):
+    if paid != prizes(len(paid), PUBLISHED_BUDGET_SATS):
         sys.exit(f"{targets_file(room)} prizes are not the published uniform split")
-    table["base_sha256"] = base_fingerprint(base)
+    table["base_sha256"] = fingerprint
 
 
 def cmd_targets(args):
     """Write ROOM/targets.csv with ranks and prizes."""
-    base_name = find_base(args.room)
+    lock = read_base_lock(args.room)
+    base_name = find_base(args.room) if args.regenerate or lock is None else lock[0]
     if args.base and args.base != base_name:
-        sys.exit(f"--base must name the room's selected base {base_name!r}")
+        sys.exit(f"--base must name the room's published base {base_name!r}")
     base = load(base_name)
     rows = rank_targets(base)
     p = prizes(len(rows), args.budget)
@@ -564,7 +609,10 @@ def cmd_targets(args):
         existing = read_table(path)
         differs = (
             existing["targets"] != target_rows
-            or sum(row["prize_sats"] for row in existing["targets"]) != args.budget
+            or (
+                bool(target_rows)
+                and sum(row["prize_sats"] for row in existing["targets"]) != args.budget
+            )
         )
         if differs:
             if not args.regenerate:
@@ -572,13 +620,17 @@ def cmd_targets(args):
                     f"{path} is already published; refusing to change ranks or prizes"
                 )
             write_table(path, published)
+            write_base_lock(args.room, base_name, base)
             print(f"regenerated target table for {base_name}")
             return
         write_table(path, existing)
+        if args.regenerate or lock is None:
+            write_base_lock(args.room, base_name, base)
         print(f"target table verified for {base_name}")
         return
     os.makedirs(args.room, exist_ok=True)
     write_table(path, published)
+    write_base_lock(args.room, base_name, base)
     if p:
         print(
             f"{len(rows)} targets; first prize {p[0]} sats, last {p[-1]}; "
@@ -831,7 +883,9 @@ def cmd_merge(args):
 
 
 def chunked(items, size):
-    """Lists of up to SIZE items (itertools.batched, which needs Python 3.12)."""
+    """Yield lists of up to SIZE items."""
+    if size < 1:
+        raise ValueError("batch size must be at least one")
     it = iter(items)
     while chunk := list(itertools.islice(it, size)):
         yield chunk
