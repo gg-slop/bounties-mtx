@@ -9,8 +9,8 @@ room's current DAG, follow the setup steps below. Encode claim submissions as
 claim PR.
 
 ```shell
-git clone https://github.com/gamesguru/bounties-mtx.git
-cd bounties-mtx
+git clone https://github.com/gamesguru/gapfill-bounties.git
+cd gapfill-bounties
 git submodule update --init --recursive
 python3 ./scripts/bounty.py decode
 # ~~~~
@@ -24,3 +24,8 @@ rezzy inspect gaps -i merged-L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI-v12-d1-
 rezzy inspect gaps -i \
   merged-L58ME6ufiP49v97UIOBIpvWKEgj4912JmECPuDzlvCI-v12-d1-71756.jsonl --json
 ```
+
+These gap reports show missing IDs referenced by the current DAG. Fetching those
+events can reveal more missing ancestors. The bounty's initial target list is
+fixed, and each target is claimable only when its full recursive
+`prev_events`/`auth_events` chain resolves to the base.

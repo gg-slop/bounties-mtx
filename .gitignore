@@ -10,6 +10,7 @@ __pycache__/
 
 # other ignores
 .env
+/pr.*.md
 
 # federation fetch output (plaintext room data)
 fetched/

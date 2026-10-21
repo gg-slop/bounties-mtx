@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pylint: disable=too-many-lines
 # PYTHON_ARGCOMPLETE_OK
 """Backfill bounty tooling: targets, submission -> delta, ledger payouts.
 
@@ -12,33 +13,48 @@
                                             [--replace]
                                             -> prints the unsigned payout txn
   bounty.py paid    ROOM TXID              -> records a completed payout
+  bounty.py address ROOM CLAIMANT ADDRESS  -> sets the address on that claimant's
+                                    unpaid rows that have none
   bounty.py encode [FILE...] [--lines N]  -> stem.NN.jsonl.b64 (50K lines each)
   bounty.py decode [FILE...]              -> stem.NN.jsonl.b64 back into FILE
                                     (default files: from res/*/*.jsonl.b64)
 
 ROOM is the 43-char room ID. The bounty a claim targets comes from where it
 lives: ROOM/submissions/x.jsonl.b64 (build) or ROOM/deltas/x.claim.json (merge).
-The base DAG is selected by ROOM/targets.csv; an optional
-ROOM/submissions/manifest.json {"base": "merged-ROOM-..."} or --base can pin
-one explicitly.
+The published base DAG, fingerprint, and budget are pinned in ROOM/base.lock;
+before publication, targets selects the deepest matching merged DAG under
+res/ROOM.
+The payout address is a "Payout: <address>" line in the PR description (merge
+--pr-body).
 
 Stored DAGs are per-line base64, in line-aligned parts. Any command that loads
 a DAG accepts FILE or, if FILE is absent, its .b64 parts (or a single FILE.b64).
 
 Builds may use explicitly selected earlier deltas. The merge workflow replays
 claims in order, adding each verified delta to the pool used for later claims.
-Requires orjson (canonical bytes must be identical everywhere).
+Requires orjson (canonical bytes must be identical everywhere). build and merge
+also need rezzy's C library: set REZZY_LIB to the absolute path of librezzy_ffi.
+The other commands (targets, payout, paid, encode, decode) do not load it. rezzy
+owns every room-version rule (reference hash, redaction, content hash); this
+script only checks the results.
 
-A target is a deduplicated prev_events/auth_events ID referenced by BASE but
-absent from it. Event IDs are room-v12 reference hashes. Submitted content is
-kept only when its Matrix content hash validates; otherwise it is redacted.
+A target is a deduplicated prev_events/auth_events ID or m.relates_to event ID
+referenced by BASE but absent from it. Event IDs are the room version's
+reference hashes, which the base's own m.room.create declares. Submitted
+content is kept only when its content hash validates; otherwise it is redacted.
 A target is *closed* when it and every prev_events/auth_events link of its
-ancestors resolve into the accumulated event pool.
+ancestors resolve into the accumulated event pool (m.relates_to finds targets
+but does not gate closure: a redacted copy of an event has lost it). Targets are
+only the initial missing IDs: closing one means following every link,
+recursively, down to events in BASE. Newly revealed gaps are not added as
+targets; if a gap is also an initial target, it remains eligible under its own
+row.
 """
 
 import argparse
 import base64
 import csv
+import ctypes
 import glob
 import hashlib
 import importlib
@@ -51,82 +67,24 @@ import tempfile
 
 import orjson
 
-_payout_spec = importlib.util.spec_from_file_location(
-    "bounty_payout",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "bounty_payout.py"),
-)
-assert _payout_spec is not None
-_payout = importlib.util.module_from_spec(_payout_spec)
-assert _payout_spec.loader is not None
-_payout_spec.loader.exec_module(_payout)
 
-# Redaction allow-lists (room v11+; v12 additionally drops room_id on create).
-TOP = {
-    "event_id",
-    "type",
-    "room_id",
-    "sender",
-    "state_key",
-    "content",
-    "hashes",
-    "signatures",
-    "depth",
-    "prev_events",
-    "auth_events",
-    "origin_server_ts",
-}
-CONTENT = {
-    "m.room.create": {"creator", "room_version", "m.federate", "predecessor", "type"},
-    "m.room.member": {"membership", "join_authorised_via_users_server"},
-    "m.room.power_levels": {
-        "ban",
-        "events",
-        "events_default",
-        "kick",
-        "redact",
-        "state_default",
-        "users",
-        "users_default",
-        "invite",
-    },
-    "m.room.join_rules": {"join_rule", "allow"},
-    "m.room.history_visibility": {"history_visibility"},
-    "m.room.redaction": {"redacts"},
-}
+def _sibling(name):
+    """Load scripts/NAME.py, which sits beside this file but is not a package."""
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{name}.py")
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_payout = _sibling("bounty_payout")
 
 
 def canon(o):
     """Canonical JSON bytes (sorted keys, compact, UTF-8)."""
     return orjson.dumps(o, option=orjson.OPT_SORT_KEYS)
-
-
-def reference_object(ev):
-    """The redacted event object used to calculate its room-v12 event ID."""
-    t = ev.get("type")
-    e = {
-        k: v for k, v in ev.items() if k in TOP and k not in ("signatures", "event_id")
-    }
-    if t == "m.room.create":
-        e.pop("room_id", None)
-    c = e.get("content", {})
-    keep = CONTENT.get(t, set())
-    e["content"] = {k: v for k, v in c.items() if k in keep}
-    if (
-        t == "m.room.member"
-        and "third_party_invite" in c
-        and "signed" in c["third_party_invite"]
-    ):
-        e["content"]["third_party_invite"] = {
-            "signed": c["third_party_invite"]["signed"]
-        }
-    return e
-
-
-def reference_id(ev):
-    """Room-v12 event ID: sha256 of the redacted event, unpadded urlsafe b64."""
-    e = reference_object(ev)
-    h = hashlib.sha256(canon(e)).digest()
-    return "$" + base64.urlsafe_b64encode(h).rstrip(b"=").decode()
 
 
 PART = re.compile(r"\.\d+\.jsonl(\.b64)?$")
@@ -158,6 +116,8 @@ def iter_lines(path, b64_only=False):
     if not sources:
         raise FileNotFoundError(f"no input for {path}")
     for src in sources:
+        if os.path.islink(src) or not os.path.isfile(src):
+            raise SystemExit(f"{src}: not a regular file")
         with open(src, "rb") as f:
             for line in f:  # bytes: splits on \n only, never on U+2028
                 line = line.rstrip(b"\n")
@@ -174,89 +134,155 @@ def load(path):
     return evs
 
 
-def content_hash_valid(ev):
-    """Whether hashes.sha256 covers the complete event content."""
-    hashes = ev.get("hashes")
-    expected = hashes.get("sha256") if isinstance(hashes, dict) else None
-    if not isinstance(expected, str):
-        return False
-    unhashed = {
-        k: v
-        for k, v in ev.items()
-        if k not in ("event_id", "unsigned", "signatures", "hashes")
-    }
-    actual = base64.b64encode(hashlib.sha256(canon(unhashed)).digest())
-    actual = actual.rstrip(b"=").decode("ascii")
-    return actual == expected
+NO_HASH_IDS = {"1", "2"}  # their event IDs are not content hashes
 
 
-def redact_event(ev):
-    """Return the event with content restricted to the room-version allow-list."""
-    if not isinstance(ev.get("content", {}), dict):
-        sys.exit(f"{ev.get('event_id', '<unknown>')}: content must be an object")
-    redacted = {k: v for k, v in ev.items() if k in TOP}
-    t = ev.get("type")
-    c = ev.get("content", {})
-    redacted["content"] = {k: v for k, v in c.items() if k in CONTENT.get(t, set())}
-    if (
-        t == "m.room.member"
-        and "third_party_invite" in c
-        and "signed" in c["third_party_invite"]
-    ):
-        redacted["content"]["third_party_invite"] = {
-            "signed": c["third_party_invite"]["signed"]
-        }
-    return redacted
+class Event(dict):
+    """A checked event; `full` says whether its content hash covers its content."""
+
+    full = False
 
 
-def validate_event(event, room):
-    """Return a hash-checked or safely redacted event, or exit on invalid ID/room."""
-    if not isinstance(event, dict) or not isinstance(event.get("event_id"), str):
-        sys.exit("event has no event_id")
-    eid = event["event_id"]
-    if event.get("type") == "m.room.create":
-        if event.get("room_id", room) != room:
-            sys.exit(f"{eid}: wrong room")
-    elif event.get("room_id") != room:
-        sys.exit(f"{eid}: wrong room")
-    try:
-        normalized = event if content_hash_valid(event) else redact_event(event)
-        actual = reference_id(normalized)
-    except (KeyError, TypeError, ValueError) as exc:
-        sys.exit(f"{eid}: malformed event: {exc}")
-    if actual != eid:
-        sys.exit(f"{eid}: event_id does not match reference hash")
-    return normalized
+def full_content(ev):
+    """Whether EV carries content that its hash covers (not a redacted copy)."""
+    return getattr(ev, "full", False)
 
 
-def equivalent_events(left, right):
-    """Compare copies by their redacted reference-hash representation."""
-    return canon(reference_object(left)) == canon(reference_object(right))
+def room_info(base):
+    """(room_id, room_version) as the base DAG itself declares them."""
+    room_id = version = None
+    for e in base.values():
+        room_id = room_id or e.get("room_id")
+        if e.get("type") == "m.room.create":
+            version = str(e.get("content", {}).get("room_version", "1"))
+        if room_id and version:
+            break
+    if not (room_id and version):
+        sys.exit("base has no m.room.create event or room_id")
+    if version in NO_HASH_IDS:
+        sys.exit(f"room version {version} event IDs are not hashes; unsupported")
+    return room_id, version
 
 
-def load_delta(path, room, base):
+def rezzy_events(lines, room_version):
+    """Describe each canonical JSON line of LINES through rezzy's C ABI.
+
+    rezzy owns the room-version rules (reference hash, redaction, content hash).
+    REZZY_LIB must be an absolute path: the working directory may be a PR head.
+    """
+    path = os.environ.get("REZZY_LIB", "")
+    if not os.path.isabs(path) or not os.path.isfile(path):
+        sys.exit(
+            "set REZZY_LIB to the absolute path of librezzy_ffi "
+            "(see README.md, Running the tools locally)"
+        )
+    lib = ctypes.CDLL(path)
+    lib.rezzy_hash_events.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    lib.rezzy_hash_events.restype = ctypes.c_int
+    lib.rezzy_free.argtypes = [ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t]
+    lib.rezzy_free.restype = None
+    data = b"\n".join(lines) + b"\n"
+    out, out_len = ctypes.POINTER(ctypes.c_uint8)(), ctypes.c_size_t()
+    status = lib.rezzy_hash_events(
+        room_version.encode(), data, len(data), ctypes.byref(out), ctypes.byref(out_len)
+    )
+    text = ctypes.string_at(out, out_len.value) if out else b""
+    lib.rezzy_free(out, out_len)
+    if status != 0:
+        sys.exit(f"rezzy failed: {text.decode(errors='replace')[:300]}")
+    records = orjson.loads(text)["events"]
+    if len(records) != len(lines):
+        sys.exit("rezzy returned a different number of records than events")
+    return records
+
+
+def check_event(event, rec, room_id):
+    """(Event, None) for a verified event, or (None, reason)."""
+    if "error" in rec:
+        return None, rec["error"]
+    claimed = event.get("event_id") if isinstance(event, dict) else None
+    if not isinstance(claimed, str):
+        return None, "event has no event_id"
+    if claimed != rec["event_id"]:
+        return None, f"{claimed}: event_id does not match reference hash"
+    room = rec.get("room_id")
+    if room != room_id and not (room is None and rec.get("type") == "m.room.create"):
+        return None, f"{claimed}: wrong room"
+    if rec["content_hash_ok"]:
+        kept = Event(event)
+        kept.full = True
+    else:  # keep only what the room version's redaction rules preserve
+        kept = Event(rec["redacted"])
+        kept["event_id"] = claimed
+    return kept, None
+
+
+BATCH = 256  # events per rezzy call, which bounds the copies held at once
+
+
+def check_events(events, base):
+    """[(Event, None) | (None, reason)] for each of EVENTS, in order."""
+    checked = []
+    if not events:
+        return checked
+    room_id, version = room_info(base)
+    for start in range(0, len(events), BATCH):
+        end = start + BATCH
+        chunk = events[start:end]
+        records = rezzy_events([canon(e) for e in chunk], version)
+        checked.extend(check_event(e, r, room_id) for e, r in zip(chunk, records))
+    return checked
+
+
+def depth_cap(base):
+    """Deepest event in the base: no submitted event may go beyond it."""
+    return max(e["depth"] for e in base.values())
+
+
+def load_delta(path, base):
     """Load and validate one delta; its filename digest covers canonical source rows."""
     events = {}
-    source = []
+    digest = hashlib.sha256()
+    previous_id = None
+    batch = []
+    cap = depth_cap(base)
+
+    def validate_batch():
+        for checked, err in check_events(batch, base):
+            if err:
+                sys.exit(f"{path}: {err}")
+            eid = checked["event_id"]
+            if eid in base:
+                sys.exit(f"{path}: delta event {eid} already exists in base")
+            if checked["depth"] > cap:
+                sys.exit(f"{path}: delta event {eid} is deeper than the base ({cap})")
+            previous = events.get(eid)
+            if previous is None or (
+                full_content(checked) and not full_content(previous)
+            ):
+                events[eid] = checked
+        batch.clear()
+
     for line in iter_lines(path):
         event = orjson.loads(line)
-        source.append(event)
-        checked = validate_event(event, f"!{room}")  # v12 room IDs are "!" + hash
-        eid = checked["event_id"]
-        if eid in base:
-            sys.exit(f"{path}: delta event {eid} already exists in base")
-        previous = events.get(eid)
-        if previous is not None and not equivalent_events(previous, checked):
-            sys.exit(f"{path}: conflicting copies of event {eid}")
-        if previous is None or (
-            content_hash_valid(checked) and not content_hash_valid(previous)
-        ):
-            events[eid] = checked
-    body = b"".join(
-        canon(e) + b"\n" for e in sorted(source, key=lambda e: e["event_id"])
-    )
+        eid = event.get("event_id")
+        if not isinstance(eid, str) or (previous_id is not None and eid <= previous_id):
+            sys.exit(f"{path}: delta events are not sorted by unique event ID")
+        previous_id = eid
+        digest.update(canon(event) + b"\n")
+        batch.append(event)
+        if len(batch) >= BATCH:
+            validate_batch()
+    if batch:
+        validate_batch()
     expected = os.path.basename(path).split(".", 1)[0]
-    if hashlib.sha256(body).hexdigest()[:16] != expected:
+    if digest.hexdigest()[:16] != expected:
         sys.exit(f"{path}: delta digest does not match its contents")
     return events
 
@@ -287,14 +313,10 @@ def claim_agrees(claim, room, path, base, base_name):
 
 
 def add_to_pool(pool, events):
-    """Add EVENTS to POOL, rejecting conflicts and preferring valid content."""
+    """Add EVENTS to POOL, preferring a copy whose content is hash-covered."""
     for eid, event in events.items():
         previous = pool.get(eid)
-        if previous is not None and not equivalent_events(previous, event):
-            sys.exit(f"conflicting delta copies of event {eid}")
-        if previous is None or (
-            content_hash_valid(event) and not content_hash_valid(previous)
-        ):
+        if previous is None or (full_content(event) and not full_content(previous)):
             pool[eid] = event
 
 
@@ -307,26 +329,29 @@ def load_deltas(directory, room, base, paths=None, base_name=None):
             sys.exit(f"{path}: no matching claim file")
         if not claim_agrees(read_json(claim_path), room, path, base, base_name):
             sys.exit(f"{claim_path}: metadata does not match its delta or base")
-        add_to_pool(pool, load_delta(path, room, base))
+        add_to_pool(pool, load_delta(path, base))
     return pool
 
 
 def combine_pools(*pools):
-    """Combine event pools without allowing one copy to silently override another."""
+    """Combine event pools, preferring a copy whose content is hash-covered."""
     combined = {}
     for pool in pools:
         for eid, event in pool.items():
             previous = combined.get(eid)
-            if previous is not None and not equivalent_events(previous, event):
-                sys.exit(f"conflicting copies of event {eid}")
-            if previous is None or (
-                content_hash_valid(event) and not content_hash_valid(previous)
-            ):
+            if previous is None or (full_content(event) and not full_content(previous)):
                 combined[eid] = event
     return combined
 
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
+# A name is dot-separated parts of [A-Za-z0-9_@+=-]; if it has a dot, its last
+# part must contain a non-digit, so a trailing ".NN" can only be a part number.
+_NAME_PART = r"[A-Za-z0-9_@+=-]+"
+_NAME_LAST = r"[A-Za-z0-9_@+=-]*[A-Za-z_@+=-][A-Za-z0-9_@+=-]*"
+SUBMISSION_NAME = re.compile(
+    rf"(?:{_NAME_PART}|(?:{_NAME_PART}\.)+{_NAME_LAST})(\.[0-9]{{2,}})?\.jsonl(\.b64)?"
+)
 
 
 def room_of(path):
@@ -340,7 +365,7 @@ def room_of(path):
 def find_base(room, pinned=None):
     """Logical path of ROOM's base DAG under res/ (whole file, parts or .b64).
 
-    pinned names one file (from a manifest); otherwise the greatest depth in
+    pinned names one file; otherwise the greatest depth in
     the file name wins.
     """
     found = {
@@ -362,56 +387,80 @@ def find_base(room, pinned=None):
     return max(found, key=depth)
 
 
-ADDR = re.compile(r"(?:bc1|tb1|bcrt1)[a-z0-9]{8,87}|[13mn2][a-km-zA-HJ-NP-Z1-9]{25,39}")
-
-
-def read_manifest(submission):
-    """The optional manifest.json next to SUBMISSION ({} if absent)."""
-    man = os.path.join(os.path.dirname(submission), "manifest.json")
-    return read_json(man) if os.path.exists(man) else {}
-
-
 def submission_base(path, override=None):
-    """(room, base DAG path), respecting explicit and published selections."""
+    """(room, base DAG path), respecting an explicit or the published selection."""
     room = room_of(path)
-    manifest_base = read_manifest(path).get("base")
     if override:
         return room, override
-    if manifest_base:
-        return room, find_base(room, manifest_base)
     table = read_table(targets_file(room))
     return room, table.get("base") or find_base(room)
 
 
-TABLE_COLS = ("rank", "event_id", "refs", "min_child_depth", "prize_sats")
-TABLE_INTS = ("budget_sats", "count")
+TABLE_COLS = ("event_id", "n_refs", "min_child_depth", "prize_sats")
+BASE_LOCK_NAME = "base.lock"
+
+
+def base_lock_path(room):
+    """Path to the published room base name, fingerprint, and budget."""
+    return f"{room}/{BASE_LOCK_NAME}"
+
+
+def read_base_lock(room):
+    """Return the published (base name, fingerprint, budget), if it exists."""
+    path = base_lock_path(room)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="ascii") as f:
+            name, fingerprint, budget = f.read().splitlines()
+            budget = int(budget)
+    except (OSError, ValueError):
+        sys.exit(f"{path}: expected base path, SHA-256, and budget on separate lines")
+    if (
+        not re.fullmatch(rf"res/{room}/merged-{room}-[A-Za-z0-9._-]+\.jsonl", name)
+        or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+        or budget < 0
+    ):
+        sys.exit(f"{path}: invalid base lock")
+    return name, fingerprint, budget
+
+
+def write_base_lock(room, base_name, base, budget):
+    """Pin the published room base and its canonical event-set fingerprint."""
+    with open(base_lock_path(room), "w", encoding="ascii") as f:
+        f.write(f"{base_name}\n{base_fingerprint(base)}\n{budget}\n")
 
 
 def write_table(path, table):
-    """Write the target table as CSV, its metadata as leading '# key: value' lines."""
+    """Write the four-column target CSV."""
     with open(path, "w", encoding="utf-8", newline="") as f:
-        for key, value in table.items():
-            if key != "targets":
-                f.write(f"# {key}: {value}\n")
         out = csv.DictWriter(f, fieldnames=TABLE_COLS, lineterminator="\n")
         out.writeheader()
         out.writerows(table["targets"])
 
 
-def read_table(path):
-    """Read a table written by write_table back into the original dict shape."""
+def read_table(path, room=None):
+    """Read the four-column target CSV and resolve the room's base DAG."""
     with open(path, encoding="utf-8", newline="") as f:
-        lines = f.read().splitlines()
-    meta = {}
-    for line in lines:
-        if line.startswith("# "):
-            key, _, value = line[2:].partition(": ")
-            meta[key] = int(value) if key in TABLE_INTS else value
+        records = list(csv.reader(f))
+    if not records or tuple(records[0]) != TABLE_COLS:
+        sys.exit(f"{path}: invalid target table header")
+    if any(len(record) != len(TABLE_COLS) for record in records[1:]):
+        sys.exit(f"{path}: target rows must have {len(TABLE_COLS)} columns")
     rows = [
-        {c: (r[c] if c == "event_id" else int(r[c])) for c in TABLE_COLS}
-        for r in csv.DictReader(x for x in lines if not x.startswith("#"))
+        {
+            c: (record[i] if c == "event_id" else int(record[i]))
+            for i, c in enumerate(TABLE_COLS)
+        }
+        for record in records[1:]
     ]
-    return {**meta, "targets": rows}
+    room = room or os.path.basename(os.path.dirname(path))
+    lock = read_base_lock(room)
+    if lock:
+        base = find_base(room, os.path.basename(lock[0]).removesuffix(".jsonl"))
+    else:
+        base = find_base(room)
+    return {"base": base, "targets": rows}
 
 
 def targets_file(room):
@@ -422,37 +471,60 @@ def targets_file(room):
     return path
 
 
+def relation_ids(e):
+    """Event IDs named by content["m.relates_to"] (relation target, reply)."""
+    rel = (e.get("content") or {}).get("m.relates_to")
+    if not isinstance(rel, dict):
+        return []
+    reply = rel.get("m.in_reply_to")
+    ids = [rel.get("event_id")]
+    if isinstance(reply, dict):
+        ids.append(reply.get("event_id"))
+    valid = (i for i in ids if isinstance(i, str) and i.startswith("$"))
+    return list(dict.fromkeys(valid))
+
+
 def links(e):
-    """All event IDs an event depends on (prev_events then auth_events)."""
+    """DAG edges an event depends on (prev_events then auth_events).
+
+    Closure follows only these: redaction keeps them, so every copy of an event
+    names the same ones. m.relates_to lives in content, which a redacted copy
+    loses, so it can find targets (referenced_ids) but never gates closure.
+    """
     return list(e.get("prev_events", [])) + list(e.get("auth_events", []))
+
+
+def referenced_ids(e):
+    """Every event ID an event names: its DAG edges and its relations."""
+    return links(e) + relation_ids(e)
 
 
 def rank_targets(base):
     """Missing IDs, hardest-looking first: fewest references, then oldest.
 
-    refs is how many base events point at the target (few means few servers
+    n_refs is how many base events reference the target (few means few servers
     are likely to have seen it); min_child_depth is the shallowest depth among
     those referencing events (smaller means older history). Both are
     recomputable from the base DAG.
     """
     seen = {}
     for e in base.values():
-        for p in links(e):
+        for p in referenced_ids(e):
             if p not in base:
                 seen.setdefault(p, {})[e["event_id"]] = e["depth"]
     rows = [
-        {"event_id": t, "refs": len(d), "min_child_depth": min(d.values())}
+        {"event_id": t, "n_refs": len(d), "min_child_depth": min(d.values())}
         for t, d in seen.items()
     ]
-    rows.sort(key=lambda r: (r["refs"], r["min_child_depth"], r["event_id"]))
+    rows.sort(key=lambda r: (r["n_refs"], r["min_child_depth"], r["event_id"]))
     return rows
 
 
-def prizes(n, budget, alpha=0.25):
+def prizes(n, budget, alpha=0):
     """Rank k of n gets budget * k**-alpha / sum(j**-alpha), in whole sats.
 
-    A mild power law (about 7:1 top to bottom at n=2163, alpha=0.25). Largest-
-    remainder rounding keeps the total exactly equal to budget.
+    The default alpha=0 splits the budget uniformly. Largest-remainder rounding
+    keeps the total exactly equal to budget.
     """
     w = [k**-alpha for k in range(1, n + 1)]
     total = sum(w)
@@ -511,47 +583,71 @@ def base_fingerprint(base):
 
 
 def check_published_base(room, base_name, base, table):
-    """Require claims to use the exact DAG used to publish the target table."""
-    expected = table.get("base_sha256")
-    if not expected or table.get("base") != base_name:
-        sys.exit(f"claim must use the published base {table.get('base')!r}")
-    if base_fingerprint(base) != expected:
-        sys.exit(f"base DAG fingerprint does not match published bounty for {room}")
+    """Require the table and claim to use the base pinned at publication."""
+    lock = read_base_lock(room)
+    if lock is None:
+        sys.exit(f"{base_lock_path(room)} is missing; publish the base lock first")
+    expected_base, expected_fingerprint, budget = lock
+    if expected_base != base_name or table.get("base") != base_name:
+        sys.exit(f"claim must use the published room base {expected_base!r}")
+    fingerprint = base_fingerprint(base)
+    if fingerprint != expected_fingerprint:
+        sys.exit(f"{base_name}: contents do not match the published base lock")
+    expected = rank_targets(base)
+    actual = [
+        {key: row[key] for key in ("event_id", "n_refs", "min_child_depth")}
+        for row in table["targets"]
+    ]
+    if actual != expected:
+        sys.exit(f"{targets_file(room)} does not match the selected base DAG")
+    paid = [row["prize_sats"] for row in table["targets"]]
+    if paid != prizes(len(paid), budget):
+        sys.exit(f"{targets_file(room)} prizes are not the published uniform split")
+    table["base_sha256"] = fingerprint
 
 
 def cmd_targets(args):
     """Write ROOM/targets.csv with ranks and prizes."""
-    base_name = args.base or find_base(args.room)
+    lock = read_base_lock(args.room)
+    budget = args.budget if args.budget is not None else lock[2] if lock else None
+    if budget is None:
+        sys.exit("--budget SATS is required to publish a new table")
+    if budget < 0:
+        sys.exit("--budget must be non-negative")
+    if lock and budget != lock[2] and not args.regenerate:
+        sys.exit("changing the published budget requires --regenerate")
+    base_name = find_base(args.room) if args.regenerate or lock is None else lock[0]
+    if args.base and args.base != base_name:
+        sys.exit(f"--base must name the room's published base {base_name!r}")
     base = load(base_name)
     rows = rank_targets(base)
-    p = prizes(len(rows), args.budget)
+    p = prizes(len(rows), budget)
     path = f"{args.room}/targets.csv"
-    target_rows = [{"rank": i + 1, **r, "prize_sats": p[i]} for i, r in enumerate(rows)]
-    published = {
-        "budget_sats": args.budget,
-        "count": len(rows),
-        "weight": "rank**-0.25",
-        "order": "refs asc, min_child_depth asc, event_id asc",
-        "targets": target_rows,
-    }
+    target_rows = [{**r, "prize_sats": p[i]} for i, r in enumerate(rows)]
+    published = {"targets": target_rows}
     if os.path.exists(path):
         existing = read_table(path)
-        if any(existing.get(k) != v for k, v in published.items()):
-            sys.exit(f"{path} is already published; refusing to change ranks or prizes")
-        fingerprint = base_fingerprint(base)
-        if existing.get("base") not in (None, base_name):
-            sys.exit(f"{path} is already tied to base {existing['base']!r}")
-        if existing.get("base_sha256") not in (None, fingerprint):
-            sys.exit(f"{path} is already tied to a different base DAG")
-        existing["base"] = base_name
-        existing["base_sha256"] = fingerprint
+        differs = existing["targets"] != target_rows or (
+            bool(target_rows)
+            and sum(row["prize_sats"] for row in existing["targets"]) != budget
+        )
+        if differs:
+            if not args.regenerate:
+                sys.exit(
+                    f"{path} is already published; refusing to change ranks or prizes"
+                )
+            write_table(path, published)
+            write_base_lock(args.room, base_name, base, budget)
+            print(f"regenerated target table for {base_name}")
+            return
         write_table(path, existing)
-        print(f"published table metadata verified for {base_name}")
+        if args.regenerate or lock is None:
+            write_base_lock(args.room, base_name, base, budget)
+        print(f"target table verified for {base_name}")
         return
     os.makedirs(args.room, exist_ok=True)
-    published["base"] = base_name
-    published["base_sha256"] = base_fingerprint(base)
     write_table(path, published)
+    write_base_lock(args.room, base_name, base, budget)
     if p:
         print(
             f"{len(rows)} targets; first prize {p[0]} sats, last {p[-1]}; "
@@ -567,24 +663,21 @@ def parse_submission(path, base):
     PATH is per-line base64 (*.jsonl.b64); plain JSONL is accepted for local use.
     """
     sub, errs = {}, []
-    room = next(e["room_id"] for e in base.values() if "room_id" in e)
+    lines = enumerate(iter_lines(path), 1)
     try:
-        for n, line in enumerate(iter_lines(path), 1):
-            try:
-                e = orjson.loads(line)
-            except orjson.JSONDecodeError:
-                errs.append(f"line {n}: invalid JSON")
-                continue
-            try:
-                checked = validate_event(e, room)
-            except SystemExit as exc:
-                errs.append(f"line {n}: {exc}")
-                continue
-            eid = checked["event_id"]
-            if eid in base and not equivalent_events(base[eid], checked):
-                errs.append(f"line {n}: {eid} conflicts with base")
-            else:
-                sub[eid] = checked
+        while batch := list(itertools.islice(lines, BATCH)):
+            parsed = []  # (line number, event)
+            for n, line in batch:
+                try:
+                    parsed.append((n, orjson.loads(line)))
+                except orjson.JSONDecodeError:
+                    errs.append(f"line {n}: invalid JSON")
+            results = check_events([e for _, e in parsed], base)
+            for (n, _), (checked, err) in zip(parsed, results):
+                if err:
+                    errs.append(f"line {n}: {err}")
+                else:
+                    add_to_pool(sub, {checked["event_id"]: checked})
     except ValueError as exc:  # bad base64
         errs.append(f"invalid base64: {exc}")
     return sub, errs
@@ -622,12 +715,26 @@ def dangling_links(base, delta, merged):
     )
 
 
-def checked_payout(submission):
-    """The manifest's payout address, exiting if it isn't address-shaped."""
-    payout = read_manifest(submission).get("payout")
-    if payout is not None and not ADDR.fullmatch(str(payout)):
-        sys.exit(f"{submission}: manifest payout is not a Bitcoin address")
-    return payout
+PAYOUT_LINE = re.compile(r"(?im)^[ \t]*payout(?: address)?[ \t]*:[ \t]*(\S+)[ \t\r]*$")
+
+
+def payout_from_body(path, network="main"):
+    """The one Bitcoin address on a "Payout: <address>" line of the PR body.
+
+    Lines that are not address-shaped (such as the template's placeholder) are
+    ignored. None, with a note, if no valid address or two different ones: the
+    claim is still recorded, but nothing can be paid yet.
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        found = {
+            _payout.normalize_address(x)
+            for x in PAYOUT_LINE.findall(f.read())
+            if _payout.valid_payout_address(x, network)
+        }
+    if len(found) != 1:
+        print("no single valid 'Payout: <address>' line in the PR description")
+        return None
+    return found.pop()
 
 
 def verified_submission(path, base):
@@ -639,14 +746,29 @@ def verified_submission(path, base):
     return sub
 
 
+def new_events(sub, base, merged):
+    """Events of SUB the base and earlier deltas lack, within the base's depth."""
+    cap = depth_cap(base)
+    deep = sum(1 for v in sub.values() if v["depth"] > cap)
+    if deep:
+        print(f"ignoring {deep} events deeper than the base ({cap})")
+    return {
+        k: v
+        for k, v in sub.items()
+        if k not in base and k not in merged and v["depth"] <= cap
+    }
+
+
 def cmd_build(args):
     """Validate a submission and write its delta and claim files."""
+    name = os.path.basename(args.submission)
+    if not SUBMISSION_NAME.fullmatch(name):
+        sys.exit(f"{name}: not a valid submission name (see the room README)")
     room, base_name = submission_base(args.submission, args.base)
     base = load(base_name)
     table = read_table(targets_file(room))
     check_published_base(room, base_name, base, table)
     out = f"{room}/deltas"
-    payout = checked_payout(args.submission)
     sub = verified_submission(args.submission, base)
     merged = load_deltas(
         out,
@@ -655,7 +777,7 @@ def cmd_build(args):
         paths=[] if args.no_prior_deltas else args.prior_delta or None,
         base_name=base_name,
     )
-    delta = {k: v for k, v in sub.items() if k not in base and k not in merged}
+    delta = new_events(sub, base, merged)
     if not delta:
         sys.exit(f"{args.submission}: contains no new events")
     ok = newly_closed(base, merged, delta, [x["event_id"] for x in table["targets"]])
@@ -667,7 +789,6 @@ def cmd_build(args):
             "room": room,
             "base": base_name,
             "base_sha256": table["base_sha256"],
-            "payout": payout,
             "delta": dp,
             "delta_sha256_16": digest,
             "events": len(delta),
@@ -716,9 +837,16 @@ def claim_base_name(args, room, claim):
 
 def trusted_table(args, room, base_name, base):
     """The published target table, checked against the base and the claim push."""
-    table = read_table(args.trusted_targets or targets_file(room))
+    table = read_table(args.trusted_targets or targets_file(room), room)
     if args.trusted_targets and table != read_table(targets_file(room)):
         sys.exit(f"{targets_file(room)} changed in the claim push")
+    if args.trusted_base_lock:
+        with (
+            open(args.trusted_base_lock, "rb") as trusted,
+            open(base_lock_path(room), "rb") as current,
+        ):
+            if trusted.read() != current.read():
+                sys.exit(f"{base_lock_path(room)} changed in the claim push")
     check_published_base(room, base_name, base, table)
     return table
 
@@ -743,7 +871,7 @@ def append_awards(args, claim, tg, targets):
             row = {
                 "target": t,
                 "claimant": args.claimant,
-                "address": claim.get("payout"),
+                "address": args.payout,
                 "pr": args.pr,
                 "delta": claim["delta"],
                 "prize_sats": tg[t]["prize_sats"],
@@ -762,7 +890,7 @@ def cmd_merge(args):
     table = trusted_table(args, room, base_name, base)
     check_claim_delta(claim, table, base_name)
     tg = {x["event_id"]: x for x in table["targets"]}
-    current = load_delta(claim["delta"], room, base)
+    current = load_delta(claim["delta"], base)
     for path in args.prior_delta or []:
         if not re.fullmatch(DELTA_PATH.format(room=room), path):
             sys.exit(f"bad prior delta path {path!r}")
@@ -778,7 +906,21 @@ def cmd_merge(args):
         return
     if not args.claimant:
         sys.exit("--claimant is required unless --no-awards is set")
+    args.payout = (
+        payout_from_body(args.pr_body, _payout.room_network(room))
+        if args.pr_body
+        else None
+    )
     append_awards(args, claim, tg, closed)
+
+
+def chunked(items, size):
+    """Yield lists of up to SIZE items."""
+    if size < 1:
+        raise ValueError("batch size must be at least one")
+    it = iter(items)
+    while chunk := list(itertools.islice(it, size)):
+        yield chunk
 
 
 def write_parts(stem, lines, size):
@@ -788,7 +930,7 @@ def write_parts(stem, lines, size):
     os.makedirs(parent, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".b64-parts-", dir=parent) as tempdir:
         temp_paths = []
-        for i, chunk in enumerate(itertools.batched(lines, size)):
+        for i, chunk in enumerate(chunked(lines, size)):
             temp_path = os.path.join(tempdir, f"{i:02d}.jsonl.b64")
             with open(temp_path, "wb") as f:
                 for line in chunk:
@@ -841,14 +983,40 @@ def b64strict(line):
     return base64.b64decode(line, validate=True)
 
 
+def add_ledger_commands(sp):
+    """Register the commands that read or update a room's ledger."""
+    s = sp.add_parser("payout")
+    s.add_argument("room")
+    s.add_argument("--min", type=int, default=1000, help="minimum sats per payee")
+    s.add_argument("--fee-rate", type=int, default=5, help="sat/vB")
+    s.add_argument("--change")
+    s.add_argument("--address", action="append", default=[], metavar="WHO=ADDR")
+    s.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace an unbroadcast pending payout batch",
+    )
+    s.set_defaults(f=_payout.cmd_payout)
+    s = sp.add_parser("paid")
+    s.add_argument("room")
+    s.add_argument("txid")
+    s.set_defaults(f=_payout.cmd_paid)
+    s = sp.add_parser("address")
+    s.add_argument("room")
+    s.add_argument("claimant")
+    s.add_argument("payout", metavar="ADDRESS")
+    s.set_defaults(f=_payout.cmd_address)
+
+
 def main():
     """Parse the command line and dispatch."""
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(required=True)
     s = sp.add_parser("targets")
     s.add_argument("room")
-    s.add_argument("--budget", type=int, default=20000)
+    s.add_argument("--budget", type=int)
     s.add_argument("--base")
+    s.add_argument("--regenerate", action="store_true")
     s.set_defaults(f=cmd_targets)
     s = sp.add_parser("build")
     s.add_argument("submission")
@@ -870,12 +1038,18 @@ def main():
     s.add_argument("--pr")
     s.add_argument("--claimant")
     s.add_argument(
+        "--pr-body",
+        metavar="FILE",
+        help="file holding the PR description, which names the payout address",
+    )
+    s.add_argument(
         "--no-awards",
         action="store_true",
         help="validate and load a claim delta without recording prizes",
     )
     s.add_argument("--base")
     s.add_argument("--trusted-targets")
+    s.add_argument("--trusted-base-lock")
     s.add_argument(
         "--prior-delta",
         action="append",
@@ -883,22 +1057,7 @@ def main():
         help="previous claim delta, in merge order; repeat for each prior claim",
     )
     s.set_defaults(f=cmd_merge)
-    s = sp.add_parser("payout")
-    s.add_argument("room")
-    s.add_argument("--min", type=int, default=1000, help="minimum sats per payee")
-    s.add_argument("--fee-rate", type=int, default=5, help="sat/vB")
-    s.add_argument("--change")
-    s.add_argument("--address", action="append", default=[], metavar="WHO=ADDR")
-    s.add_argument(
-        "--replace",
-        action="store_true",
-        help="replace an unbroadcast pending payout batch",
-    )
-    s.set_defaults(f=_payout.cmd_payout)
-    s = sp.add_parser("paid")
-    s.add_argument("room")
-    s.add_argument("txid")
-    s.set_defaults(f=_payout.cmd_paid)
+    add_ledger_commands(sp)
     for name in ("encode", "decode"):
         s = sp.add_parser(name)
         s.add_argument("files", nargs="*")
