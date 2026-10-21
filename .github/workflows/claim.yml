@@ -179,7 +179,9 @@ jobs:
 
   build-same-repo-submission:
     needs: discover-same-repo-submission
-    if: needs.discover-same-repo-submission.result == 'success'
+    if: >-
+      needs.discover-same-repo-submission.result == 'success' &&
+      needs.discover-same-repo-submission.outputs.submitted != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -221,6 +223,8 @@ jobs:
             ${{ needs.discover-same-repo-submission.outputs.submitted }}
         run: |
           set -euo pipefail
+          # An empty deltas/ must expand to nothing, not to the literal glob.
+          shopt -s nullglob
           printf '%s' "$SUBMITTED_JSON" | jq -r '.[]' > "$RUNNER_TEMP/submitted.txt"
           sort -V "$RUNNER_TEMP/submitted.txt" -o "$RUNNER_TEMP/submitted.txt"
           last_submission=
@@ -304,6 +308,7 @@ jobs:
     needs: [discover-same-repo-submission, build-same-repo-submission]
     if: >-
       needs.discover-same-repo-submission.result == 'success' &&
+      needs.discover-same-repo-submission.outputs.submitted != '[]' &&
       needs.build-same-repo-submission.result == 'success'
     runs-on: ubuntu-latest
     permissions:

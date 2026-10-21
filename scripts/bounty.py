@@ -37,9 +37,9 @@ A target is a deduplicated prev_events/auth_events ID or m.relates_to event ID
 referenced by BASE but absent from it. Event IDs are the room version's
 reference hashes, which the base's own m.room.create declares. Submitted
 content is kept only when its content hash validates; otherwise it is redacted.
-A target is *closed* when it and every prev_events, auth_events, and
-m.relates_to link of its recursively referenced events resolve into the
-accumulated event pool. Targets are
+A target is *closed* when it and every prev_events/auth_events link of its
+ancestors resolve into the accumulated event pool (m.relates_to finds targets
+but does not gate closure: a redacted copy of an event has lost it). Targets are
 only the initial missing IDs: closing one means following every link,
 recursively, down to events in BASE. Newly revealed gaps are not added as
 targets; if a gap is also an initial target, it remains eligible under its own
@@ -434,9 +434,18 @@ def relation_ids(e):
 
 
 def links(e):
-    """All event IDs an event depends on: prev_events, auth_events, relations."""
-    dag = list(e.get("prev_events", [])) + list(e.get("auth_events", []))
-    return dag + relation_ids(e)
+    """DAG edges an event depends on (prev_events then auth_events).
+
+    Closure follows only these: redaction keeps them, so every copy of an event
+    names the same ones. m.relates_to lives in content, which a redacted copy
+    loses, so it can find targets (referenced_ids) but never gates closure.
+    """
+    return list(e.get("prev_events", [])) + list(e.get("auth_events", []))
+
+
+def referenced_ids(e):
+    """Every event ID an event names: its DAG edges and its relations."""
+    return links(e) + relation_ids(e)
 
 
 def rank_targets(base):
@@ -449,7 +458,7 @@ def rank_targets(base):
     """
     seen = {}
     for e in base.values():
-        for p in links(e):
+        for p in referenced_ids(e):
             if p not in base:
                 seen.setdefault(p, {})[e["event_id"]] = e["depth"]
     rows = [
@@ -534,6 +543,9 @@ def check_published_base(room, base_name, base, table):
     ]
     if actual != expected:
         sys.exit(f"{targets_file(room)} does not match the selected base DAG")
+    paid = [row["prize_sats"] for row in table["targets"]]
+    if paid != prizes(len(paid), sum(paid)):
+        sys.exit(f"{targets_file(room)} prizes are not the published uniform split")
     table["base_sha256"] = base_fingerprint(base)
 
 
@@ -818,6 +830,13 @@ def cmd_merge(args):
     append_awards(args, claim, tg, closed)
 
 
+def chunked(items, size):
+    """Lists of up to SIZE items (itertools.batched, which needs Python 3.12)."""
+    it = iter(items)
+    while chunk := list(itertools.islice(it, size)):
+        yield chunk
+
+
 def write_parts(stem, lines, size):
     """Write lines as base64 STEM.NN.jsonl.b64 parts; return line counts."""
     counts = []
@@ -825,7 +844,7 @@ def write_parts(stem, lines, size):
     os.makedirs(parent, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".b64-parts-", dir=parent) as tempdir:
         temp_paths = []
-        for i, chunk in enumerate(itertools.batched(lines, size)):
+        for i, chunk in enumerate(chunked(lines, size)):
             temp_path = os.path.join(tempdir, f"{i:02d}.jsonl.b64")
             with open(temp_path, "wb") as f:
                 for line in chunk:

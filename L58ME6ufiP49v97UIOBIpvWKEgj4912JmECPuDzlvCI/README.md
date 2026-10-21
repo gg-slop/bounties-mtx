@@ -16,13 +16,14 @@ multiple events can point to the same ID, and missing `auth_events` and
 These are only the initial targets, not the whole of the missing history.
 Fetching one can reveal further missing dependencies, which can reveal more. A
 target closes only when the base, earlier accepted deltas, and the current claim
-collectively provide every `prev_events`, `auth_events`, and `m.relates_to`
-(`event_id` and `m.in_reply_to.event_id`) link of the target and each
-recursively referenced event, until the chain reaches the base. Dependency gaps
-are needed to close their referring target but are not targets or paid
-separately. If a dependency is also an initial target, its own row remains
-eligible. The prize goes to the first merged claim that completes the target's
-full dependency chain.
+collectively provide every `prev_events` and `auth_events` link of the target
+and each ancestor, recursively, until the chain reaches the base. A
+`m.relates_to` reference (`event_id` or `m.in_reply_to.event_id`) in the base
+only makes its target a row; it does not add to what a chain must supply,
+because a redacted copy of an event no longer carries it. Ancestor gaps are
+needed to close their descendant but are not targets or paid separately. If an
+ancestor is also an initial target, its own row remains eligible. The prize goes
+to the first merged claim that completes the target's full chain.
 
 Events deeper than the base's deepest event (71,756) are out of scope: CI
 ignores them in a submission and rejects them in a delta.
@@ -39,8 +40,9 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
 1. Get the base DAG: run `git submodule update --init`, then
    `python3 scripts/bounty.py decode`. This writes plaintext under
    `res/<ROOM>/`, which is git-ignored.
-2. Find missing IDs with `rezzy inspect gaps -i res/<ROOM>/merged-….jsonl`.
-   Targets and prizes are in `<ROOM>/targets.csv`.
+2. Find missing IDs with `rezzy inspect gaps -i res/<ROOM>/merged-….jsonl`, or
+   any tool of your own (see _Running the tools locally_ for installing
+   `rezzy`). Targets and prizes are in `<ROOM>/targets.csv`.
 3. Put recovered events, one JSON event per line, in
    `<ROOM>/submissions/<username>.jsonl`, then run
    `python3 scripts/bounty.py encode <ROOM>/submissions/<username>.jsonl`. Use a
@@ -68,11 +70,13 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
 
 ## Running the tools locally
 
-Claimants need `orjson` (`pip install orjson`) for `decode` and `encode`. A
-maintainer running `scripts/bounty.py build` or `merge` by hand also needs
-Rezzy's C library, `librezzy_ffi`, built from the same pinned commit CI uses
-(`REZZY_SHA` at the top of `.github/workflows/claim.yml`). The `rezzy` command
-alone is not enough.
+Claimants need Python 3.9 or newer and `orjson` (`pip install orjson`) for
+`decode` and `encode`. The `rezzy` command used above is optional and can be
+installed from the same pinned commit as below with
+`cargo install --locked --path ../rezzy-pinned/rezzy-cli`. A maintainer running
+`scripts/bounty.py build` or `merge` by hand also needs Rezzy's C library,
+`librezzy_ffi`, built from the same pinned commit CI uses (`REZZY_SHA` at the
+top of `.github/workflows/claim.yml`). The `rezzy` command alone is not enough.
 
 ```sh
 REZZY_SHA=$(sed -n 's/^  REZZY_SHA: //p' .github/workflows/claim.yml)
