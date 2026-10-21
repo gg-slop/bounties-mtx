@@ -138,9 +138,17 @@ jobs:
               blocked_rooms[$room]=1
               continue
             fi
+            body="$RUNNER_TEMP/pr-$pr-body.txt"
+            if ! gh pr view "$pr" --repo "$REPOSITORY" \
+              --json body --jq .body > "$body"; then
+              echo "$claim: could not read the description of PR #$pr" \
+                | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              blocked_rooms[$room]=1
+              continue
+            fi
             if python3 -I scripts/bounty.py merge "$claim" --pr "$pr" \
-              --claimant "$who" --trusted-targets "$trusted_targets" \
-              "${prior_args[@]}"; then
+              --claimant "$who" --pr-body "$body" \
+              --trusted-targets "$trusted_targets" "${prior_args[@]}"; then
               printf '%s\n' "$delta" >> "$prior_file"
             else
               echo "$claim: merge validation failed" \

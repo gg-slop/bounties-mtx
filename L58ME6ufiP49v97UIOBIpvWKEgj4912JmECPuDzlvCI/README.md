@@ -24,6 +24,9 @@ separately. If a dependency is also an initial target, its own row remains
 eligible. The prize goes to the first merged claim that completes the target's
 full dependency chain.
 
+Events deeper than the base's deepest event (71,756) are out of scope: CI
+ignores them in a submission and rejects them in a delta.
+
 If an edge cannot be resolved or followed (for example, it points to an event
 from another room), provide evidence explaining why.
 
@@ -31,8 +34,7 @@ from another room), provide evidence explaining why.
 
 For each room, one PR adds one logical submission. If it exceeds 50,000 lines,
 it can contain multiple sequential `.NN` part files. Include every generated
-part and `<ROOM>/submissions/manifest.json`. `<ROOM>` is the 43-character
-base-64-url room ID; the directory selects the bounty.
+part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
 
 1. Get the base DAG: run `git submodule update --init`, then
    `python3 scripts/bounty.py decode`. This writes plaintext under
@@ -46,13 +48,12 @@ base-64-url room ID; the directory selects the bounty.
    GitHub username or a safe alias of your Matrix localpart. Replace other
    characters, such as `.`, with `_`. Add `-2` for a later claim. The `.00`
    suffix added by `encode` is a part number, not a claim counter.
-4. Commit all generated parts, from `<username>.00.jsonl.b64` onward, and
-   `<ROOM>/submissions/manifest.json`; then open the PR. Never commit plaintext
-   `.jsonl`. Base64 is an encoding, not privacy: anyone can decode it.
-5. Set the manifest to `{"payout": "bc1q…"}`. Without an address there is no
-   payout. It may also name the selected base as `{"base": "merged-<ROOM>-…"}`,
-   but cannot select a different base: the room's selected base is authoritative
-   and claims against another base are rejected.
+4. Commit all generated parts, from `<username>.00.jsonl.b64` onward, then open
+   the PR. Never commit plaintext `.jsonl`. Base64 is an encoding, not privacy:
+   anyone can decode it.
+5. Put your payout address on its own line in the PR description:
+   `Payout: bc1q…`. Without exactly one valid address there is no payout until
+   it is added.
 
 ## What CI does
 
@@ -103,14 +104,15 @@ unset or wrong, the script exits without accepting the claim.
   prizes unless `--regenerate` is supplied. Claims must use the room's selected
   base DAG; CI checks the CSV's target IDs and ranking fields against that DAG
   and records its fingerprint in each claim.
-- Claimants provide a Bitcoin address as `"payout"` in their manifest.
-  `scripts/bounty.py payout <ROOM> --min 5000` aggregates unpaid prizes by
-  address, applies the minimum, and prints an unsigned
-  `bitcoin-cli walletcreatefundedpsbt` command to run manually with your own
-  node. After broadcasting, run `scripts/bounty.py paid <ROOM> <TXID>` to mark
-  those rows paid. A pending batch must be recorded as paid before creating
-  another; use `--replace` only to discard a batch that was not broadcast. This
-  repository does not sign or broadcast transactions. Address totals under
-  `--min` carry over (on-chain outputs below roughly 300–550 sats are dust).
+- Claimants give a Bitcoin address on a `Payout:` line of the PR description,
+  read when the claim is merged. `scripts/bounty.py payout <ROOM> --min 5000`
+  aggregates unpaid prizes by address, applies the minimum, and prints an
+  unsigned `bitcoin-cli walletcreatefundedpsbt` command to run manually with
+  your own node. After broadcasting, run `scripts/bounty.py paid <ROOM> <TXID>`
+  to mark those rows paid. A pending batch must be recorded as paid before
+  creating another; use `--replace` only to discard a batch that was not
+  broadcast. This repository does not sign or broadcast transactions. Address
+  totals under `--min` carry over (on-chain outputs below roughly 300–550 sats
+  are dust).
 - Unclaimed prizes are not redistributed; at the deadline they return to the
   fund or roll into a later bounty.

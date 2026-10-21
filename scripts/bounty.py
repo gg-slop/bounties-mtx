@@ -18,9 +18,9 @@
 
 ROOM is the 43-char room ID. The bounty a claim targets comes from where it
 lives: ROOM/submissions/x.jsonl.b64 (build) or ROOM/deltas/x.claim.json (merge).
-The base DAG is the deepest matching merged DAG under res/ROOM. An optional
-ROOM/submissions/manifest.json {"base": "merged-ROOM-..."} or --base may name
-it explicitly.
+The base DAG is the deepest matching merged DAG under res/ROOM, or --base. The
+payout address is a "Payout: <address>" line in the PR description (merge
+--pr-body).
 
 Stored DAGs are per-line base64, in line-aligned parts. Any command that loads
 a DAG accepts FILE or, if FILE is absent, its .b64 parts (or a single FILE.b64).
@@ -230,12 +230,18 @@ def check_events(events, base):
     return checked
 
 
+def depth_cap(base):
+    """Deepest event in the base: no submitted event may go beyond it."""
+    return max(e["depth"] for e in base.values())
+
+
 def load_delta(path, base):
     """Load and validate one delta; its filename digest covers canonical source rows."""
     events = {}
     digest = hashlib.sha256()
     previous_id = None
     batch = []
+    cap = depth_cap(base)
 
     def validate_batch():
         for checked, err in check_events(batch, base):
@@ -244,6 +250,8 @@ def load_delta(path, base):
             eid = checked["event_id"]
             if eid in base:
                 sys.exit(f"{path}: delta event {eid} already exists in base")
+            if checked["depth"] > cap:
+                sys.exit(f"{path}: delta event {eid} is deeper than the base ({cap})")
             previous = events.get(eid)
             if previous is None or (
                 full_content(checked) and not full_content(previous)
@@ -341,7 +349,7 @@ def room_of(path):
 def find_base(room, pinned=None):
     """Logical path of ROOM's base DAG under res/ (whole file, parts or .b64).
 
-    pinned names one file (from a manifest); otherwise the greatest depth in
+    pinned names one file; otherwise the greatest depth in
     the file name wins.
     """
     found = {
@@ -366,20 +374,11 @@ def find_base(room, pinned=None):
 ADDR = re.compile(r"(?:bc1|tb1|bcrt1)[a-z0-9]{8,87}|[13mn2][a-km-zA-HJ-NP-Z1-9]{25,39}")
 
 
-def read_manifest(submission):
-    """The optional manifest.json next to SUBMISSION ({} if absent)."""
-    man = os.path.join(os.path.dirname(submission), "manifest.json")
-    return read_json(man) if os.path.exists(man) else {}
-
-
 def submission_base(path, override=None):
-    """(room, base DAG path), respecting explicit and published selections."""
+    """(room, base DAG path), respecting an explicit or the published selection."""
     room = room_of(path)
-    manifest_base = read_manifest(path).get("base")
     if override:
         return room, override
-    if manifest_base:
-        return room, find_base(room, manifest_base)
     table = read_table(targets_file(room))
     return room, table.get("base") or find_base(room)
 
@@ -635,12 +634,22 @@ def dangling_links(base, delta, merged):
     )
 
 
-def checked_payout(submission):
-    """The manifest's payout address, exiting if it isn't address-shaped."""
-    payout = read_manifest(submission).get("payout")
-    if payout is not None and not ADDR.fullmatch(str(payout)):
-        sys.exit(f"{submission}: manifest payout is not a Bitcoin address")
-    return payout
+PAYOUT_LINE = re.compile(r"(?im)^[ \t]*payout(?: address)?[ \t]*:[ \t]*(\S+)[ \t\r]*$")
+
+
+def payout_from_body(path):
+    """The one Bitcoin address on a "Payout: <address>" line of the PR body.
+
+    Lines that are not address-shaped (such as the template's placeholder) are
+    ignored. None, with a note, if no valid address or two different ones: the
+    claim is still recorded, but nothing can be paid yet.
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        found = {x for x in PAYOUT_LINE.findall(f.read()) if ADDR.fullmatch(x)}
+    if len(found) != 1:
+        print("no single valid 'Payout: <address>' line in the PR description")
+        return None
+    return found.pop()
 
 
 def verified_submission(path, base):
@@ -650,6 +659,19 @@ def verified_submission(path, base):
         print("\n".join(errs[:50]), file=sys.stderr)
         sys.exit(1)
     return sub
+
+
+def new_events(sub, base, merged):
+    """Events of SUB the base and earlier deltas lack, within the base's depth."""
+    cap = depth_cap(base)
+    deep = sum(1 for v in sub.values() if v["depth"] > cap)
+    if deep:
+        print(f"ignoring {deep} events deeper than the base ({cap})")
+    return {
+        k: v
+        for k, v in sub.items()
+        if k not in base and k not in merged and v["depth"] <= cap
+    }
 
 
 def cmd_build(args):
@@ -662,7 +684,6 @@ def cmd_build(args):
     table = read_table(targets_file(room))
     check_published_base(room, base_name, base, table)
     out = f"{room}/deltas"
-    payout = checked_payout(args.submission)
     sub = verified_submission(args.submission, base)
     merged = load_deltas(
         out,
@@ -671,7 +692,7 @@ def cmd_build(args):
         paths=[] if args.no_prior_deltas else args.prior_delta or None,
         base_name=base_name,
     )
-    delta = {k: v for k, v in sub.items() if k not in base and k not in merged}
+    delta = new_events(sub, base, merged)
     if not delta:
         sys.exit(f"{args.submission}: contains no new events")
     ok = newly_closed(base, merged, delta, [x["event_id"] for x in table["targets"]])
@@ -683,7 +704,6 @@ def cmd_build(args):
             "room": room,
             "base": base_name,
             "base_sha256": table["base_sha256"],
-            "payout": payout,
             "delta": dp,
             "delta_sha256_16": digest,
             "events": len(delta),
@@ -759,7 +779,7 @@ def append_awards(args, claim, tg, targets):
             row = {
                 "target": t,
                 "claimant": args.claimant,
-                "address": claim.get("payout"),
+                "address": args.payout,
                 "pr": args.pr,
                 "delta": claim["delta"],
                 "prize_sats": tg[t]["prize_sats"],
@@ -794,6 +814,7 @@ def cmd_merge(args):
         return
     if not args.claimant:
         sys.exit("--claimant is required unless --no-awards is set")
+    args.payout = payout_from_body(args.pr_body) if args.pr_body else None
     append_awards(args, claim, tg, closed)
 
 
@@ -886,6 +907,11 @@ def main():
     s.add_argument("claim")
     s.add_argument("--pr")
     s.add_argument("--claimant")
+    s.add_argument(
+        "--pr-body",
+        metavar="FILE",
+        help="file holding the PR description, which names the payout address",
+    )
     s.add_argument(
         "--no-awards",
         action="store_true",

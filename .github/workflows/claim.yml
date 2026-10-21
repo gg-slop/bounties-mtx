@@ -122,15 +122,6 @@ jobs:
               mkdir -p "$safe_input/${part%/*}"
               cp -- "$part" "$safe_input/$part"
             done < "$RUNNER_TEMP/submitted.txt"
-            manifest="$room/submissions/manifest.json"
-            if [[ -e "$manifest" || -L "$manifest" ]]; then
-              if [[ -L "$room" || -L "$room/submissions" || -L "$manifest" ||
-                    ! -f "$manifest" ]]; then
-                echo "$manifest: expected a regular, non-symlink file" >&2
-                exit 1
-              fi
-              cp -- "$manifest" "$safe_input/$manifest"
-            fi
             output=$(python3 -I trusted/scripts/bounty.py build \
               "$safe_input/$room/submissions/$logical.jsonl" "${prior_args[@]}")
             printf '%s\n' "$output"
@@ -250,7 +241,7 @@ jobs:
             last_submission=$submission_key
 
             # Build from a clean directory containing only listed encoded
-            # parts and the manifest, never from implicit workspace siblings.
+            # parts, never from implicit workspace siblings.
             safe_input="$RUNNER_TEMP/claim-input"
             mkdir -p "$safe_input/$room/submissions"
             while IFS= read -r part; do
@@ -269,18 +260,6 @@ jobs:
               mkdir -p "$RUNNER_TEMP/raw-submission/${part%/*}"
               cp -- "$source" "$RUNNER_TEMP/raw-submission/$part"
             done < "$RUNNER_TEMP/submitted.txt"
-            manifest="../work/$room/submissions/manifest.json"
-            if [[ -e "$manifest" || -L "$manifest" ]]; then
-              if [[ -L "../work/$room" || -L "../work/$room/submissions" ||
-                    -L "$manifest" || ! -f "$manifest" ]]; then
-                echo "$manifest: expected a regular, non-symlink file" >&2
-                exit 1
-              fi
-              cp -- "$manifest" "$safe_input/$room/submissions/manifest.json"
-              mkdir -p "$RUNNER_TEMP/raw-submission/$room/submissions"
-              cp -- "$manifest" \
-                "$RUNNER_TEMP/raw-submission/$room/submissions/manifest.json"
-            fi
 
             prior_file="$RUNNER_TEMP/prior-$room.txt"
             if [[ ! -f "$prior_file" ]]; then
