@@ -17,7 +17,7 @@ import bounty_award as rc  # noqa: E402
 
 ROOM = "A" * 43
 ADDR_A = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
-ADDR_B = "bc1qw508d6qejxtdg4y5r2zarvary0c5xw7kv8f3t4"
+ADDR_B = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
 OTHER = "B" * 43
 FAIL = subprocess.CalledProcessError(1, "x")
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -384,6 +384,8 @@ class PublishTest(unittest.TestCase):
         networks = patch.dict(rc.payout_module().ROOM_NETWORKS, {ROOM: "main"})
         networks.start()
         self.addCleanup(networks.stop)
+        for address in (ADDR_A, ADDR_B):
+            self.assertTrue(rc.payout_module().valid_payout_address(address, "main"))
         self.root = os.path.join(self.tmp.name, "repo")
         self.src = os.path.join(self.tmp.name, "staged")
         os.makedirs(os.path.join(self.root, ROOM))
