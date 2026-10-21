@@ -462,6 +462,18 @@ def trusted_claims(resolved):
     return prs, deltas
 
 
+def body_address(room, body):
+    """The one payout address valid for ROOM's network in BODY, as replay finds it."""
+    payout = _payout_module()
+    network = payout.room_network(room)
+    addresses = {
+        payout.normalize_address(value)
+        for value in PAYOUT_LINE.findall(body)
+        if payout.valid_payout_address(value, network)
+    }
+    return next(iter(addresses)) if len(addresses) == 1 else None
+
+
 def row_problem(room, row, prizes, prs, deltas):
     """Why ROW is not a legitimate new award, or None."""
     if not (isinstance(row, dict) and set(row) == LEDGER_KEYS):
@@ -486,15 +498,7 @@ def row_problem(room, row, prizes, prs, deltas):
     ):
         return "non-string field"
     pr = prs.get(pr_number)
-    payout_lines = PAYOUT_LINE.findall(pr["body"] if pr else "")
-    payout = _payout_module()
-    network = payout.room_network(room)
-    addresses = {
-        payout.normalize_address(value)
-        for value in payout_lines
-        if payout.valid_payout_address(value, network)
-    }
-    expected_address = next(iter(addresses)) if len(addresses) == 1 else None
+    expected_address = body_address(room, pr["body"] if pr else "")
     checks = (
         (row["status"] == "unpaid", "not unpaid"),
         (isinstance(prize, int) and not isinstance(prize, bool), "bad prize"),

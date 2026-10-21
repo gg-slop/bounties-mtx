@@ -12,9 +12,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-# pylint: disable-next=wrong-import-position,import-error
+# pylint: disable=wrong-import-position,import-error
 import bounty_award as rc  # noqa: E402
 import bounty_payout  # noqa: E402
+
+# pylint: enable=wrong-import-position,import-error
 
 ROOM = "A" * 43
 ADDR_A = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
