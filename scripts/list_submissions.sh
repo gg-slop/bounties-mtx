@@ -16,10 +16,10 @@ out=${2:?usage: list_submissions.sh CHANGED OUT}
 name='([A-Za-z0-9_@+=-]+|([A-Za-z0-9_@+=-]+\.)+[A-Za-z0-9_@+=-]*[A-Za-z_@+=-][A-Za-z0-9_@+=-]*)(\.[0-9]{2,})?\.jsonl\.b64'
 valid="^\"rooms/[A-Za-z0-9_-]{43}/submissions/$name\"\$"
 
-grep -E "$valid" "$changed" | tr -d '"' > "$out" || true
+grep -E "$valid" "$changed" | tr -d '"' >"$out" || true
 if grep -E 'submissions/.*jsonl\.b64"$' "$changed" | grep -vE "$valid"; then
-  echo "invalid submission file name (see the room README)" >&2
-  exit 1
+	echo "invalid submission file name (see the room README)" >&2
+	exit 1
 fi
 
 # -V orders numbered parts numerically (.11 before .100).
@@ -29,6 +29,6 @@ sort -V "$out" -o "$out"
 # One logical submission per room: numbered parts of a single name.
 multi=$(sed -E 's/(\.[0-9]+)?\.jsonl\.b64$//' "$out" | sort -u | cut -d/ -f2 | uniq -d)
 if [[ -n "$multi" ]]; then
-  echo "more than one submission name in room(s): $multi" >&2
-  exit 1
+	echo "more than one submission name in room(s): $multi" >&2
+	exit 1
 fi

@@ -12,37 +12,37 @@ set -euo pipefail
 submitted=${1:?usage: apply_generated.sh SUBMITTED GENERATED}
 generated=${2:?usage: apply_generated.sh SUBMITTED GENERATED}
 
-while IFS= read -r s; do git rm -q -- "$s"; done < "$submitted"
+while IFS= read -r s; do git rm -q -- "$s"; done <"$submitted"
 
 for top in "$generated"/*; do
-  [[ "${top##*/}" == rooms ]] || {
-    echo "unexpected generated path: ${top##*/}" >&2
-    exit 1
-  }
+	[[ "${top##*/}" == rooms ]] || {
+		echo "unexpected generated path: ${top##*/}" >&2
+		exit 1
+	}
 done
 
 for room_dir in "$generated"/rooms/*; do
-  room=${room_dir##*/}
-  [[ "$room" =~ ^[A-Za-z0-9_-]{43}$ ]] || {
-    echo "unexpected generated room path: $room" >&2
-    exit 1
-  }
-  if [[ -L rooms || -L "rooms/$room" || -L "rooms/$room/deltas" ]]; then
-    echo "rooms/$room/deltas: refusing symlink destination" >&2
-    exit 1
-  fi
-  mkdir -p "rooms/$room/deltas"
-  for delta in "$room_dir"/deltas/*; do
-    [[ -f "$delta" && ! -L "$delta" ]] || {
-      echo "$delta: expected a regular generated file" >&2
-      exit 1
-    }
-    target="rooms/$room/deltas/${delta##*/}"
-    [[ ! -L "$target" ]] || {
-      echo "$target: refusing symlink destination" >&2
-      exit 1
-    }
-    cp -- "$delta" "$target"
-    git add -- "$target"
-  done
+	room=${room_dir##*/}
+	[[ "$room" =~ ^[A-Za-z0-9_-]{43}$ ]] || {
+		echo "unexpected generated room path: $room" >&2
+		exit 1
+	}
+	if [[ -L rooms || -L "rooms/$room" || -L "rooms/$room/deltas" ]]; then
+		echo "rooms/$room/deltas: refusing symlink destination" >&2
+		exit 1
+	fi
+	mkdir -p "rooms/$room/deltas"
+	for delta in "$room_dir"/deltas/*; do
+		[[ -f "$delta" && ! -L "$delta" ]] || {
+			echo "$delta: expected a regular generated file" >&2
+			exit 1
+		}
+		target="rooms/$room/deltas/${delta##*/}"
+		[[ ! -L "$target" ]] || {
+			echo "$target: refusing symlink destination" >&2
+			exit 1
+		}
+		cp -- "$delta" "$target"
+		git add -- "$target"
+	done
 done
