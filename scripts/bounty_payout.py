@@ -1,17 +1,21 @@
 """Payout commands for bounty ledgers."""
 
 import hashlib
+import importlib
 import os
 import re
 import shlex
 import sys
 
-try:
-    import orjson
-except ImportError:  # address helpers need only the stdlib (publish job)
-    orjson = None
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
+def _orjson():
+    """orjson, imported on first use so the address helpers stay stdlib-only."""
+    return importlib.import_module("orjson")
+
+
 BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 BECH32_GEN = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
@@ -122,13 +126,13 @@ def valid_payout_address(address, network="main"):
 def read_json(path):
     """Load one JSON document."""
     with open(path, "rb") as f:
-        return orjson.loads(f.read())
+        return _orjson().loads(f.read())
 
 
 def write_json(path, obj):
     """Write one JSON document, indented."""
     with open(path, "wb") as f:
-        f.write(orjson.dumps(obj, option=orjson.OPT_INDENT_2))
+        f.write(_orjson().dumps(obj, option=_orjson().OPT_INDENT_2))
 
 
 def btc(sats):
@@ -145,7 +149,7 @@ def unpaid_rows(room, overrides):
         sys.exit(f"no ledger for room {room}")
     with open(path, "rb") as f:
         for line in f:
-            row = orjson.loads(line)
+            row = _orjson().loads(line)
             if row["status"] != "unpaid":
                 continue
             address = overrides.get(row["claimant"], row.get("address"))
@@ -179,7 +183,7 @@ def print_payout(pay, args, pending_path, included):
     if args.change:
         options["changeAddress"] = args.change
     cmd = ["bitcoin-cli", "-named", "walletcreatefundedpsbt", "inputs=[]"]
-    cmd += [f"outputs={outputs}", f"options={orjson.dumps(options).decode()}"]
+    cmd += [f"outputs={outputs}", f"options={_orjson().dumps(options).decode()}"]
     print(f"# {len(pay)} outputs, {sum(pay.values())} sats (+ network fee)")
     print(shlex.join(cmd))
     write_json(pending_path, {"outputs": pay, "rows": included})
@@ -264,7 +268,7 @@ def cmd_paid(args):
         sys.exit(f"no ledger for room {args.room}")
 
     with open(ledger_path, "rb") as f:
-        ledger = [orjson.loads(line) for line in f if line.strip()]
+        ledger = [_orjson().loads(line) for line in f if line.strip()]
     pending_rows = pending.get("rows")
     if not isinstance(pending_rows, list) or not pending_rows:
         sys.exit("pending payout has no rows")
@@ -278,7 +282,7 @@ def cmd_paid(args):
         temp_path = f"{ledger_path}.tmp"
         with open(temp_path, "wb") as f:
             for row in ledger:
-                f.write(orjson.dumps(row) + b"\n")
+                f.write(_orjson().dumps(row) + b"\n")
             f.flush()
             os.fsync(f.fileno())
         os.replace(temp_path, ledger_path)
@@ -301,7 +305,7 @@ def cmd_address(args):
     if not os.path.exists(ledger_path):
         sys.exit(f"no ledger for room {args.room}")
     with open(ledger_path, "rb") as f:
-        ledger = [orjson.loads(line) for line in f if line.strip()]
+        ledger = [_orjson().loads(line) for line in f if line.strip()]
     rows = [r for r in ledger if r["claimant"] == args.claimant]
     if not rows:
         sys.exit(f"no ledger rows for claimant {args.claimant!r}")
@@ -313,7 +317,7 @@ def cmd_address(args):
     temp_path = f"{ledger_path}.tmp"
     with open(temp_path, "wb") as f:
         for row in ledger:
-            f.write(orjson.dumps(row) + b"\n")
+            f.write(_orjson().dumps(row) + b"\n")
         f.flush()
         os.fsync(f.fileno())
     os.replace(temp_path, ledger_path)
