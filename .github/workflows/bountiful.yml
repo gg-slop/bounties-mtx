@@ -1,5 +1,10 @@
 ---
 name: "DAG Hunt"
+# Three jobs, three trust levels. Data moves between them only as artifacts.
+#   resolve  credentials to read PRs; runs no rezzy and builds nothing
+#   replay   builds and runs rezzy; no credentials of any kind
+#   publish  the only job that can write to master; builds and runs no rezzy,
+#            and accepts nothing from replay but validated, append-only ledgers
 on:
   push:
     branches: [master]
@@ -12,20 +17,48 @@ env:
   # The commit of rezzy whose C ABI checks every event; bump it deliberately.
   REZZY_SHA: 48adad07e9ebe63a377568e89da574e502a284f4
 jobs:
-  check:
+  resolve:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       pull-requests: read
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           # Runs in this concurrency group may have queued behind a prior
-          # ledger push. Start from the current branch so the award run sees it.
+          # ledger push. Start from the current branch so the run sees it.
           ref: master
           fetch-depth: 0
-          # The rezzy build below runs third-party build scripts: keep the
-          # write-scoped token out of .git/config until the push step.
+          persist-credentials: false
+      - id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Resolve claim attribution and pre-push tables
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$PUSH_BEFORE"
+          python3 -I scripts/bounty_award.py resolve --before "$PUSH_BEFORE" \
+            --repo "$REPOSITORY" --out "$RUNNER_TEMP/resolved.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: resolved
+          path: ${{ runner.temp }}/resolved.json
+          retention-days: 1
+
+  replay:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -47,16 +80,43 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal --no-self-update
           (cd rezzy && RUSTUP_TOOLCHAIN=1.88.0 cargo build --release --locked -p rezzy-ffi)
           echo "REZZY_LIB=$GITHUB_WORKSPACE/rezzy/target/release/librezzy_ffi.so" >> "$GITHUB_ENV"
-      - name: Award claims in merge order
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          REPOSITORY: ${{ github.repository }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: resolved
+          path: ${{ runner.temp }}/resolved
+      - name: Replay claims in merge order
         run: |
           set -euo pipefail
-          git fetch origin "$PUSH_BEFORE"
-          python3 -I scripts/bounty.py award --before "$PUSH_BEFORE" \
-            --repo "$REPOSITORY" --errors "$RUNNER_TEMP/claim-errors.txt"
+          python3 -I scripts/bounty_award.py replay \
+            --resolved "$RUNNER_TEMP/resolved/resolved.json" --out award-out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: award-out
+          path: award-out
+          retention-days: 1
+
+  publish:
+    needs: [resolve, replay]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: award-out
+          path: ${{ runner.temp }}/award-out
+      - name: Validate the staged ledgers
+        run: |
+          set -euo pipefail
+          # Standard library only, run from the checked-out master. Accepts
+          # nothing but append-only unpaid ledger rows for published rooms.
+          python3 -I scripts/bounty_award.py publish \
+            --src "$RUNNER_TEMP/award-out" --errors "$RUNNER_TEMP/claim-errors.txt"
       - name: Commit and push ledger updates
         env:
           GH_TOKEN: ${{ github.token }}

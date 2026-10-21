@@ -15,9 +15,6 @@
   bounty.py paid    ROOM TXID              -> records a completed payout
   bounty.py address ROOM CLAIMANT ADDRESS  -> sets the address on that claimant's
                                     unpaid rows that have none
-  bounty.py award --before SHA --repo OWNER/NAME --errors FILE
-                                            -> replays every claim on master in
-                                               order, recording awards
   bounty.py encode [FILE...] [--lines N]  -> stem.NN.jsonl.b64 (50K lines each)
   bounty.py decode [FILE...]              -> stem.NN.jsonl.b64 back into FILE
                                     (default files: from res/*/*.jsonl.b64)
@@ -83,7 +80,6 @@ def _sibling(name):
 
 
 _payout = _sibling("bounty_payout")
-_award = _sibling("bounty_award")
 
 
 def canon(o):
@@ -1062,11 +1058,6 @@ def main():
     )
     s.set_defaults(f=cmd_merge)
     add_ledger_commands(sp)
-    s = sp.add_parser("award")
-    s.add_argument("--before", required=True, help="trusted commit before the push")
-    s.add_argument("--repo", required=True, help="OWNER/NAME on GitHub")
-    s.add_argument("--errors", required=True, metavar="FILE")
-    s.set_defaults(f=_award.cmd_award)
     for name in ("encode", "decode"):
         s = sp.add_parser(name)
         s.add_argument("files", nargs="*")
