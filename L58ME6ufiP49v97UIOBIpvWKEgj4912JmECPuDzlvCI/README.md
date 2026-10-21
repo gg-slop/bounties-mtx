@@ -6,11 +6,11 @@ events, depth 91,136. The published budget is 20,000 sats.
 The fixed four-column CSV in `<ROOM>/targets.csv` covers 2,235 unique initial
 missing event IDs referenced by the base DAG
 (`res/<ROOM>/merged-…-v12-d1-71756.jsonl`) or by event relations in that DAG.
-The room base is selected when the target table is first published and pinned
-in `<ROOM>/base.lock` by its path and fingerprint. A deeper merged DAG added
-later does not silently replace the published base. Changing the base requires
-an explicit table regeneration and migration of existing claims. Rezzy warning's 1,820
-count is the number of local events that reference missing `prev_events`;
+The room base is selected when the target table is first published and pinned in
+`<ROOM>/base.lock` by its path and fingerprint. A deeper merged DAG added later
+does not silently replace the published base. Changing the base requires an
+explicit table regeneration and migration of existing claims. Rezzy warning's
+1,820 count is the number of local events that reference missing `prev_events`;
 multiple events can point to the same ID, and missing `auth_events` and
 `m.relates_to` targets add more. The table was generated with
 `scripts/bounty.py targets <ROOM>`.
@@ -75,10 +75,11 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
 Claimants need Python 3.9 or newer and `orjson` (`pip install orjson`) for
 `decode` and `encode`. The `rezzy` command used above is optional and can be
 installed from the same pinned commit as below with
-`cargo install --locked --path ../rezzy-pinned/rezzy-cli` after checkout. A maintainer running
-`scripts/bounty.py build` or `merge` by hand also needs Rezzy's C library,
-`librezzy_ffi`, built from the same pinned commit CI uses (`REZZY_SHA` at the
-top of `.github/workflows/claim.yml`). The `rezzy` command alone is not enough.
+`cargo install --locked --path ../rezzy-pinned/rezzy-cli` after checkout. A
+maintainer who runs `scripts/bounty.py build` or `merge` also needs Rezzy's C
+library, `librezzy_ffi`, built from the same pinned commit CI uses (`REZZY_SHA`
+at the top of `.github/workflows/claim.yml`). The `rezzy` command alone is not
+enough.
 
 ```sh
 REZZY_SHA=$(sed -n 's/^  REZZY_SHA: //p' .github/workflows/claim.yml)

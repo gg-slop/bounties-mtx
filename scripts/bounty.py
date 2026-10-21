@@ -19,8 +19,9 @@
 
 ROOM is the 43-char room ID. The bounty a claim targets comes from where it
 lives: ROOM/submissions/x.jsonl.b64 (build) or ROOM/deltas/x.claim.json (merge).
-The base DAG is the deepest matching merged DAG under res/ROOM, or --base. The
-payout address is a "Payout: <address>" line in the PR description (merge
+The published base DAG and its fingerprint are pinned in ROOM/base.lock; before
+publication, targets selects the deepest matching merged DAG under res/ROOM.
+The payout address is a "Payout: <address>" line in the PR description (merge
 --pr-body).
 
 Stored DAGs are per-line base64, in line-aligned parts. Any command that loads
@@ -404,10 +405,9 @@ def read_base_lock(room):
             name, fingerprint = f.read().splitlines()
     except (OSError, ValueError):
         sys.exit(f"{path}: expected a base path and SHA-256 on separate lines")
-    if (
-        not re.fullmatch(rf"res/{room}/merged-{room}-[A-Za-z0-9._-]+\.jsonl", name)
-        or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
-    ):
+    if not re.fullmatch(
+        rf"res/{room}/merged-{room}-[A-Za-z0-9._-]+\.jsonl", name
+    ) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
         sys.exit(f"{path}: invalid base lock")
     return name, fingerprint
 
@@ -595,6 +595,8 @@ def check_published_base(room, base_name, base, table):
 
 def cmd_targets(args):
     """Write ROOM/targets.csv with ranks and prizes."""
+    if args.budget != PUBLISHED_BUDGET_SATS:
+        sys.exit(f"the published budget is fixed at {PUBLISHED_BUDGET_SATS} sats")
     lock = read_base_lock(args.room)
     base_name = find_base(args.room) if args.regenerate or lock is None else lock[0]
     if args.base and args.base != base_name:
@@ -607,12 +609,9 @@ def cmd_targets(args):
     published = {"targets": target_rows}
     if os.path.exists(path):
         existing = read_table(path)
-        differs = (
-            existing["targets"] != target_rows
-            or (
-                bool(target_rows)
-                and sum(row["prize_sats"] for row in existing["targets"]) != args.budget
-            )
+        differs = existing["targets"] != target_rows or (
+            bool(target_rows)
+            and sum(row["prize_sats"] for row in existing["targets"]) != args.budget
         )
         if differs:
             if not args.regenerate:
@@ -819,6 +818,13 @@ def trusted_table(args, room, base_name, base):
     table = read_table(args.trusted_targets or targets_file(room), room)
     if args.trusted_targets and table != read_table(targets_file(room)):
         sys.exit(f"{targets_file(room)} changed in the claim push")
+    if args.trusted_base_lock:
+        with (
+            open(args.trusted_base_lock, "rb") as trusted,
+            open(base_lock_path(room), "rb") as current,
+        ):
+            if trusted.read() != current.read():
+                sys.exit(f"{base_lock_path(room)} changed in the claim push")
     check_published_base(room, base_name, base, table)
     return table
 
@@ -992,6 +998,7 @@ def main():
     )
     s.add_argument("--base")
     s.add_argument("--trusted-targets")
+    s.add_argument("--trusted-base-lock")
     s.add_argument(
         "--prior-delta",
         action="append",

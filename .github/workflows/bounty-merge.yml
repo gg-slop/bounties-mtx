@@ -107,6 +107,13 @@ jobs:
               blocked_rooms[$room]=1
               continue
             fi
+            trusted_base_lock="$RUNNER_TEMP/base-lock-$room"
+            if ! git show "$PUSH_BEFORE:$room/base.lock" > "$trusted_base_lock"; then
+              echo "$claim: no published base lock before this push" \
+                | tee -a "$RUNNER_TEMP/claim-errors.txt"
+              blocked_rooms[$room]=1
+              continue
+            fi
             if ! prs=$(gh api "repos/$REPOSITORY/commits/$added_at/pulls"); then
               echo "$claim: could not resolve PR for $added_at" \
                 | tee -a "$RUNNER_TEMP/claim-errors.txt"
@@ -122,7 +129,8 @@ jobs:
             fi
             if [[ "$pr" == "__NONE__" ]]; then
               if python3 -I scripts/bounty.py merge "$claim" --no-awards \
-                --trusted-targets "$trusted_targets" "${prior_args[@]}"; then
+                --trusted-targets "$trusted_targets" \
+                --trusted-base-lock "$trusted_base_lock" "${prior_args[@]}"; then
                 printf '%s\n' "$delta" >> "$prior_file"
                 echo "$claim: verified delta has no associated master PR; skipping prizes"
               else
@@ -148,7 +156,8 @@ jobs:
             fi
             if python3 -I scripts/bounty.py merge "$claim" --pr "$pr" \
               --claimant "$who" --pr-body "$body" \
-              --trusted-targets "$trusted_targets" "${prior_args[@]}"; then
+              --trusted-targets "$trusted_targets" \
+              --trusted-base-lock "$trusted_base_lock" "${prior_args[@]}"; then
               printf '%s\n' "$delta" >> "$prior_file"
             else
               echo "$claim: merge validation failed" \
