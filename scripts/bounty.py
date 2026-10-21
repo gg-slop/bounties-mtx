@@ -364,8 +364,9 @@ def room_dir(room):
 
 def room_of(path):
     """Room ID in rooms/ROOM/<kind>/<file>, the layout of submissions and deltas."""
-    room = os.path.abspath(path).split(os.sep)[-3]
-    if not ROOM.fullmatch(room):
+    parts = os.path.abspath(path).split(os.sep)
+    room = parts[-3]
+    if parts[-4] != ROOMS_DIR or not ROOM.fullmatch(room):
         sys.exit(
             f"{path}: expected rooms/ROOM/<submissions|deltas>/<file>, got {room!r}"
         )
