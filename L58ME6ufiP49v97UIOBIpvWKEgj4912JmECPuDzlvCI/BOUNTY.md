@@ -29,9 +29,10 @@ selects the bounty.
 3. Put the events you recovered, one JSON event per line, in
    `<ROOM>/submissions/<username>.jsonl`, then
    `python3 scripts/bounty.py encode <ROOM>/submissions/<username>.jsonl`.
-   `<username>` is any unique name, such as your GitHub username; add `-2` for a
-   later claim. The `.00` that `encode` appends is a part number, not a claim
-   counter.
+   `<username>` is a unique name using only letters, digits, `-` and `_`: your
+   GitHub username, or for a Matrix ID the localpart without `@` or the server.
+   Add `-2` for a later claim. The `.00` that `encode` appends is a part number,
+   not a claim counter.
 4. Commit **only** `<ROOM>/submissions/<username>.00.jsonl.b64` and
    `<ROOM>/submissions/manifest.json`, then open the PR. Never commit plaintext
    `.jsonl`. Base64 is an encoding, not privacy: anyone can decode it.
