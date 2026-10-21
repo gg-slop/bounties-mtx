@@ -37,27 +37,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # tojson keeps a newline or quote inside a file name visible, so it
-          # fails the strict name pattern below instead of splitting a line.
           gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
             --paginate --jq '.[] | select(.status != "removed") | .filename | tojson' \
             > "$RUNNER_TEMP/changed.txt"
-          name='([A-Za-z0-9_@+=-]+|([A-Za-z0-9_@+=-]+\.)+[A-Za-z0-9_@+=-]*[A-Za-z_@+=-][A-Za-z0-9_@+=-]*)(\.[0-9]{2,})?\.jsonl\.b64'
-          grep -E "^\"rooms/[A-Za-z0-9_-]{43}/submissions/$name\"\$" \
-            "$RUNNER_TEMP/changed.txt" | tr -d '"' > "$RUNNER_TEMP/submitted.txt" || true
-          if grep -E 'submissions/.*jsonl\.b64"$' "$RUNNER_TEMP/changed.txt" |
-              grep -vE "^\"rooms/[A-Za-z0-9_-]{43}/submissions/$name\"\$"; then
-            echo "invalid submission file name (see the room README)" >&2
-            exit 1
-          fi
-          sort -u "$RUNNER_TEMP/submitted.txt" -o "$RUNNER_TEMP/submitted.txt"
-          sort -V "$RUNNER_TEMP/submitted.txt" -o "$RUNNER_TEMP/submitted.txt"
-          multi=$(sed -E 's/(\.[0-9]+)?\.jsonl\.b64$//' "$RUNNER_TEMP/submitted.txt" |
-            sort -u | cut -d/ -f2 | uniq -d)
-          if [[ -n "$multi" ]]; then
-            echo "more than one submission name in room(s): $multi" >&2
-            exit 1
-          fi
+          bash trusted/scripts/list_submissions.sh \
+            "$RUNNER_TEMP/changed.txt" "$RUNNER_TEMP/submitted.txt"
       - run: pip install orjson==3.11.3
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -148,35 +132,23 @@ jobs:
     outputs:
       submitted: ${{ steps.list.outputs.submitted }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          sparse-checkout: scripts
+          persist-credentials: false
       - id: list
         name: Find changed submission files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # tojson keeps a newline or quote inside a file name visible, so it
-          # fails the strict name pattern below instead of splitting a line.
           gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
             --paginate --jq '.[] | select(.status != "removed") | .filename | tojson' \
             > "$RUNNER_TEMP/changed.txt"
-          name='([A-Za-z0-9_@+=-]+|([A-Za-z0-9_@+=-]+\.)+[A-Za-z0-9_@+=-]*[A-Za-z_@+=-][A-Za-z0-9_@+=-]*)(\.[0-9]{2,})?\.jsonl\.b64'
-          grep -E "^\"rooms/[A-Za-z0-9_-]{43}/submissions/$name\"\$" \
-            "$RUNNER_TEMP/changed.txt" | tr -d '"' > "$RUNNER_TEMP/submitted.txt" || true
-          if grep -E 'submissions/.*jsonl\.b64"$' "$RUNNER_TEMP/changed.txt" |
-              grep -vE "^\"rooms/[A-Za-z0-9_-]{43}/submissions/$name\"\$"; then
-            echo "invalid submission file name (see the room README)" >&2
-            exit 1
-          fi
-          # -V orders numbered parts numerically (.11 before .100).
-          sort -u "$RUNNER_TEMP/submitted.txt" -o "$RUNNER_TEMP/submitted.txt"
-          sort -V "$RUNNER_TEMP/submitted.txt" -o "$RUNNER_TEMP/submitted.txt"
-          # One logical submission per room: numbered parts of a single name.
-          multi=$(sed -E 's/(\.[0-9]+)?\.jsonl\.b64$//' "$RUNNER_TEMP/submitted.txt" |
-            sort -u | cut -d/ -f2 | uniq -d)
-          if [[ -n "$multi" ]]; then
-            echo "more than one submission name in room(s): $multi" >&2
-            exit 1
-          fi
+          bash trusted/scripts/list_submissions.sh \
+            "$RUNNER_TEMP/changed.txt" "$RUNNER_TEMP/submitted.txt"
 
           printf 'submitted=%s\n' "$(jq -Rsc 'split("\n")[:-1]' "$RUNNER_TEMP/submitted.txt")" \
             >> "$GITHUB_OUTPUT"
@@ -328,6 +300,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           path: work
           persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          sparse-checkout: scripts
+          persist-credentials: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           name: generated-claim-deltas
@@ -342,39 +320,8 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$SUBMITTED_JSON" | jq -r '.[]' > "$RUNNER_TEMP/submitted.txt"
-          while IFS= read -r s; do git rm -q -- "$s"; done \
-            < "$RUNNER_TEMP/submitted.txt"
-          for top in ../generated/*; do
-            [[ "${top##*/}" == rooms ]] || {
-              echo "unexpected generated path: ${top##*/}" >&2
-              exit 1
-            }
-          done
-          for room_dir in ../generated/rooms/*; do
-            room=${room_dir##*/}
-            [[ "$room" =~ ^[A-Za-z0-9_-]{43}$ ]] || {
-              echo "unexpected generated room path: $room" >&2
-              exit 1
-            }
-            if [[ -L rooms || -L "rooms/$room" || -L "rooms/$room/deltas" ]]; then
-              echo "rooms/$room/deltas: refusing symlink destination" >&2
-              exit 1
-            fi
-            mkdir -p "rooms/$room/deltas"
-            for delta in "$room_dir"/deltas/*; do
-              [[ -f "$delta" && ! -L "$delta" ]] || {
-                echo "$delta: expected a regular generated file" >&2
-                exit 1
-              }
-              target="rooms/$room/deltas/${delta##*/}"
-              [[ ! -L "$target" ]] || {
-                echo "$target: refusing symlink destination" >&2
-                exit 1
-              }
-              cp -- "$delta" "$target"
-              git add -- "$target"
-            done
-          done
+          bash ../trusted/scripts/apply_generated.sh \
+            "$RUNNER_TEMP/submitted.txt" ../generated
           if ! git diff --cached --quiet; then
             git -c user.name=claim-bot -c user.email=bot@invalid \
               commit -qm "Replace submission with delta"

@@ -1,6 +1,6 @@
 """Tests that room data is read and written under rooms/ROOM/."""
 
-# pylint: disable=missing-function-docstring
+# pylint: disable=missing-function-docstring,missing-class-docstring
 
 import contextlib
 import json
@@ -36,7 +36,7 @@ def chdir(path):
 
 class TempCwd(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
+        tmp = tempfile.TemporaryDirectory()  # pylint: disable=consider-using-with
         self.addCleanup(tmp.cleanup)
         self.tmp = tmp.name
         cwd = chdir(self.tmp)

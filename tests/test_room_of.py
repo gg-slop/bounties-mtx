@@ -1,6 +1,6 @@
 """Tests for the rooms/ROOM/<kind>/<file> layout check in scripts/bounty.py."""
 
-# pylint: disable=missing-function-docstring
+# pylint: disable=missing-function-docstring,missing-class-docstring
 
 import os
 import sys
