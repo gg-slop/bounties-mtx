@@ -13,6 +13,8 @@
                                             [--replace]
                                             -> prints the unsigned payout txn
   bounty.py paid    ROOM TXID              -> records a completed payout
+  bounty.py address ROOM CLAIMANT ADDRESS  -> sets the address on that claimant's
+                                    unpaid rows that have none
   bounty.py encode [FILE...] [--lines N]  -> stem.NN.jsonl.b64 (50K lines each)
   bounty.py decode [FILE...]              -> stem.NN.jsonl.b64 back into FILE
                                     (default files: from res/*/*.jsonl.b64)
@@ -387,7 +389,6 @@ def submission_base(path, override=None):
 
 
 TABLE_COLS = ("event_id", "n_refs", "min_child_depth", "prize_sats")
-DEFAULT_BUDGET_SATS = 20_000
 BASE_LOCK_NAME = "base.lock"
 
 
@@ -600,13 +601,9 @@ def check_published_base(room, base_name, base, table):
 def cmd_targets(args):
     """Write ROOM/targets.csv with ranks and prizes."""
     lock = read_base_lock(args.room)
-    budget = (
-        args.budget
-        if args.budget is not None
-        else lock[2]
-        if lock is not None
-        else DEFAULT_BUDGET_SATS
-    )
+    budget = args.budget if args.budget is not None else lock[2] if lock else None
+    if budget is None:
+        sys.exit("--budget SATS is required to publish a new table")
     if budget < 0:
         sys.exit("--budget must be non-negative")
     if lock and budget != lock[2] and not args.regenerate:
@@ -970,6 +967,31 @@ def b64strict(line):
     return base64.b64decode(line, validate=True)
 
 
+def add_ledger_commands(sp):
+    """Register the commands that read or update a room's ledger."""
+    s = sp.add_parser("payout")
+    s.add_argument("room")
+    s.add_argument("--min", type=int, default=1000, help="minimum sats per payee")
+    s.add_argument("--fee-rate", type=int, default=5, help="sat/vB")
+    s.add_argument("--change")
+    s.add_argument("--address", action="append", default=[], metavar="WHO=ADDR")
+    s.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace an unbroadcast pending payout batch",
+    )
+    s.set_defaults(f=_payout.cmd_payout)
+    s = sp.add_parser("paid")
+    s.add_argument("room")
+    s.add_argument("txid")
+    s.set_defaults(f=_payout.cmd_paid)
+    s = sp.add_parser("address")
+    s.add_argument("room")
+    s.add_argument("claimant")
+    s.add_argument("payout", metavar="ADDRESS")
+    s.set_defaults(f=_payout.cmd_address)
+
+
 def main():
     """Parse the command line and dispatch."""
     ap = argparse.ArgumentParser()
@@ -1019,22 +1041,7 @@ def main():
         help="previous claim delta, in merge order; repeat for each prior claim",
     )
     s.set_defaults(f=cmd_merge)
-    s = sp.add_parser("payout")
-    s.add_argument("room")
-    s.add_argument("--min", type=int, default=1000, help="minimum sats per payee")
-    s.add_argument("--fee-rate", type=int, default=5, help="sat/vB")
-    s.add_argument("--change")
-    s.add_argument("--address", action="append", default=[], metavar="WHO=ADDR")
-    s.add_argument(
-        "--replace",
-        action="store_true",
-        help="replace an unbroadcast pending payout batch",
-    )
-    s.set_defaults(f=_payout.cmd_payout)
-    s = sp.add_parser("paid")
-    s.add_argument("room")
-    s.add_argument("txid")
-    s.set_defaults(f=_payout.cmd_paid)
+    add_ledger_commands(sp)
     for name in ("encode", "decode"):
         s = sp.add_parser(name)
         s.add_argument("files", nargs="*")

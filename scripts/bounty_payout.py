@@ -171,3 +171,35 @@ def cmd_paid(args):
         f"confirmed {len(pending_rows)} ledger row(s), "
         f"{total_sats} sats, paid in {txid}"
     )
+
+
+def cmd_address(args):
+    """Record a payout address on a claimant's unpaid, address-less ledger rows."""
+    if not ROOM.fullmatch(args.room):
+        sys.exit(f"invalid room ID {args.room!r}")
+    if not ADDR.fullmatch(args.payout):
+        sys.exit(f"{args.payout!r} is not a Bitcoin address")
+    if os.path.exists(f"{args.room}/payout-pending.json"):
+        sys.exit("a payout batch is pending; record it as paid or replace it first")
+    ledger_path = f"{args.room}/ledger.jsonl"
+    if not os.path.exists(ledger_path):
+        sys.exit(f"no ledger for room {args.room}")
+    with open(ledger_path, "rb") as f:
+        ledger = [orjson.loads(line) for line in f if line.strip()]
+    rows = [r for r in ledger if r["claimant"] == args.claimant]
+    if not rows:
+        sys.exit(f"no ledger rows for claimant {args.claimant!r}")
+    changed = [r for r in rows if r["status"] == "unpaid" and r.get("address") is None]
+    if not changed:
+        sys.exit(f"{args.claimant}: no unpaid rows without an address")
+    for row in changed:
+        row["address"] = args.payout
+    temp_path = f"{ledger_path}.tmp"
+    with open(temp_path, "wb") as f:
+        for row in ledger:
+            f.write(orjson.dumps(row) + b"\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp_path, ledger_path)
+    sats = sum(r["prize_sats"] for r in changed)
+    print(f"set the address on {len(changed)} row(s), {sats} sats, for {args.claimant}")

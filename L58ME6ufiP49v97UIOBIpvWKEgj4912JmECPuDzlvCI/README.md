@@ -8,14 +8,14 @@ missing event IDs referenced by the base DAG
 (`res/<ROOM>/merged-…-v12-d1-71756.jsonl`) or by event relations in that DAG.
 The room base is selected when the target table is first published and pinned in
 `<ROOM>/base.lock` by its path, fingerprint, and budget. Each room can set its
-own budget with `scripts/bounty.py targets <ROOM> --budget SATS` before
-publication; the default is 20,000 sats. A deeper merged DAG added later does
-not silently replace the published base. Regenerating the table for a different
-base invalidates existing claims; they are not migrated automatically. Rezzy
-warning's 1,820 count is the number of local events that reference missing
-`prev_events`; multiple events can point to the same ID, and missing
-`auth_events` and `m.relates_to` targets add more. The table was generated with
-`scripts/bounty.py targets <ROOM>`.
+own budget with `scripts/bounty.py targets <ROOM> --budget SATS`, which is
+required when first publishing; later runs read it from the lock. A deeper
+merged DAG added later does not silently replace the published base.
+Regenerating the table for a different base invalidates existing claims; they
+are not migrated automatically. Rezzy warning's 1,820 count is the number of
+local events that reference missing `prev_events`; multiple events can point to
+the same ID, and missing `auth_events` and `m.relates_to` targets add more. The
+table was generated with `scripts/bounty.py targets <ROOM>`.
 
 These are only the initial targets, not the whole of the missing history.
 Fetching one can reveal further missing dependencies, which can reveal more. A
@@ -61,7 +61,7 @@ part. `<ROOM>` is the 43-character room ID; the directory selects the bounty.
    `Payout: bc1q…`. It is read once, when the claim is merged; editing the
    description afterwards does not change an award already recorded. With no
    valid address the award is still recorded, but unpayable until the maintainer
-   supplies one (`payout --address <claimant>=<address>`).
+   supplies one (`scripts/bounty.py address <ROOM> <claimant> <address>`).
 
 ## What CI does
 
@@ -117,8 +117,8 @@ unset or wrong, the script exits without accepting the claim.
   base DAG; CI checks the CSV's target IDs and ranking fields against that DAG
   and records its fingerprint in each claim.
 - Claimants give a Bitcoin address on a `Payout:` line of the PR description,
-  read when the claim is merged (a row recorded without one is paid only via
-  `payout --address <claimant>=<address>`).
+  read when the claim is merged (a row recorded without one is fixed with
+  `scripts/bounty.py address <ROOM> <claimant> <address>`).
   `scripts/bounty.py payout <ROOM> --min 5000` aggregates unpaid prizes by
   address, applies the minimum, and prints an unsigned
   `bitcoin-cli walletcreatefundedpsbt` command to run manually with your own
