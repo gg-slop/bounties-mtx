@@ -294,6 +294,7 @@ def combine_pools(*pools):
 
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
+SUBMISSION_NAME = re.compile(r"[A-Za-z0-9_-]+(\.[0-9]+)?\.jsonl(\.b64)?")
 
 
 def room_of(path):
@@ -604,6 +605,9 @@ def verified_submission(path, base):
 
 def cmd_build(args):
     """Validate a submission and write its delta and claim files."""
+    name = os.path.basename(args.submission)
+    if not SUBMISSION_NAME.fullmatch(name):
+        sys.exit(f"{name}: use only letters, digits, '-' and '_' in submission names")
     room, base_name = submission_base(args.submission, args.base)
     base = load(base_name)
     table = read_table(targets_file(room))

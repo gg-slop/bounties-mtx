@@ -51,10 +51,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           shopt -s nullglob
+          # tojson keeps a newline or quote inside a file name visible, so it
+          # fails the strict name pattern below instead of splitting a line.
           gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
-            --paginate --jq '.[] | select(.status != "removed") | .filename
-              | select(test("^[A-Za-z0-9_-]{43}/submissions/[^/]+\\.jsonl\\.b64$"))' \
-            > "$RUNNER_TEMP/submitted.txt"
+            --paginate --jq '.[] | select(.status != "removed") | .filename | tojson' \
+            > "$RUNNER_TEMP/changed.txt"
+          name='[A-Za-z0-9_-]+(\.[0-9]+)?\.jsonl\.b64'
+          grep -E "^\"[A-Za-z0-9_-]{43}/submissions/$name\"\$" \
+            "$RUNNER_TEMP/changed.txt" | tr -d '"' > "$RUNNER_TEMP/submitted.txt" || true
+          if grep -E 'submissions/.*jsonl\.b64"$' "$RUNNER_TEMP/changed.txt" |
+              grep -vE "^\"[A-Za-z0-9_-]{43}/submissions/$name\"\$"; then
+            echo "submission file names may only use letters, digits, '-' and '_'" >&2
+            exit 1
+          fi
           sort -u "$RUNNER_TEMP/submitted.txt" -o "$RUNNER_TEMP/submitted.txt"
           while IFS= read -r s; do
             room=${s%%/*}
@@ -133,10 +142,19 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           shopt -s nullglob
+          # tojson keeps a newline or quote inside a file name visible, so it
+          # fails the strict name pattern below instead of splitting a line.
           gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
-            --paginate --jq '.[] | select(.status != "removed") | .filename
-              | select(test("^[A-Za-z0-9_-]{43}/submissions/[^/]+\\.jsonl\\.b64$"))' \
-            > "$RUNNER_TEMP/submitted.txt"
+            --paginate --jq '.[] | select(.status != "removed") | .filename | tojson' \
+            > "$RUNNER_TEMP/changed.txt"
+          name='[A-Za-z0-9_-]+(\.[0-9]+)?\.jsonl\.b64'
+          grep -E "^\"[A-Za-z0-9_-]{43}/submissions/$name\"\$" \
+            "$RUNNER_TEMP/changed.txt" | tr -d '"' > "$RUNNER_TEMP/submitted.txt" || true
+          if grep -E 'submissions/.*jsonl\.b64"$' "$RUNNER_TEMP/changed.txt" |
+              grep -vE "^\"[A-Za-z0-9_-]{43}/submissions/$name\"\$"; then
+            echo "submission file names may only use letters, digits, '-' and '_'" >&2
+            exit 1
+          fi
           sort -u "$RUNNER_TEMP/submitted.txt" -o "$RUNNER_TEMP/submitted.txt"
           while IFS= read -r s; do
             room=${s%%/*}
