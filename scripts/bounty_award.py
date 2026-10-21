@@ -254,6 +254,7 @@ def valid_claim(commit, claim):
     return bool(re.fullmatch(r"[0-9a-f]{40}", commit) and CLAIM_PATH.fullmatch(claim))
 
 
+# pylint: disable=too-many-branches
 def load_resolved(path):
     """Read and strictly validate a resolved document; exit if it is malformed."""
     with open(path, "rb") as f:
@@ -293,6 +294,7 @@ def load_resolved(path):
     return doc
 
 
+# pylint: disable=too-many-instance-attributes
 class Awarder:
     """Phase 2: replay claims in order; collect errors; defer unattributable rooms."""
 
@@ -429,11 +431,18 @@ def read_prizes(room, path):
 
 
 def trusted_claims(resolved):
-    """({PR number: pr dict}, {delta paths}) from the resolved metadata."""
-    prs = {e["pr"]["number"]: e["pr"] for e in resolved["claims"].values() if e["pr"]}
-    deltas = {
-        c.replace(".claim.json", ".delta.jsonl.b64") for _, c in resolved["history"]
-    }
+    """({PR number: pr dict}, {delta path: PR number}) from resolved metadata.
+
+    Only claims that resolved without error and have a master PR are included,
+    so a delta is credited to exactly the PR that merged its claim.
+    """
+    prs, deltas = {}, {}
+    for commit, claim in resolved["history"]:
+        entry = resolved["claims"].get(claim_key(commit, claim))
+        if entry and entry["error"] is None and entry["pr"]:
+            number = entry["pr"]["number"]
+            prs[number] = entry["pr"]
+            deltas[claim.replace(".claim.json", ".delta.jsonl.b64")] = number
     return prs, deltas
 
 
@@ -476,14 +485,14 @@ def row_problem(row, prizes, prs, deltas):
     expected_address = next(iter(addresses)) if len(addresses) == 1 else None
     checks = (
         (row["status"] == "unpaid", "not unpaid"),
-        (type(prize) is int, "bad prize"),
+        (isinstance(prize, int) and not isinstance(prize, bool), "bad prize"),
         (prize == prizes[target], "prize is not the published one"),
         (pr and claimant == pr["author"], "claimant is not the PR author"),
         (
             address == expected_address,
             "address is not the single payout address in the PR",
         ),
-        (delta in deltas, "delta is not a claimed delta"),
+        (deltas.get(delta) == pr_number, "delta was not claimed by this PR"),
     )
     return next((why for ok, why in checks if not ok), None)
 
@@ -491,7 +500,7 @@ def row_problem(row, prizes, prs, deltas):
 def check_new_rows(room, tail, old, trusted):
     """Exit unless TAIL is a run of new unpaid awards that TRUSTED data backs.
 
-    TRUSTED is (prizes, prs, deltas); OLD is the current ledger's bytes.
+    TRUSTED is (prizes, prs, {delta: PR number}); OLD is the current ledger's bytes.
     """
     if tail and not tail.endswith(b"\n"):
         sys.exit(f"{room}/ledger.jsonl: appended rows must end with a newline")
@@ -533,36 +542,31 @@ def append_ledger(room, staged, root, claims):
     return True
 
 
-def publish(src, resolved, root="."):
-    """Validate the staged files in SRC and append their new rows under ROOT.
-
-    SRC came from a job that ran rezzy, so treat it as untrusted: accept only
-    `complete`, `errors.txt` and <ROOM>/ledger.jsonl regular files, for rooms
-    that exist here, and only as append-only extensions of the current ledger
-    consisting of new unpaid rows that the RESOLVED metadata and the published
-    target table back (prize, claimant, address, delta, no repeated target).
-    Returns (rooms changed, sanitized errors).
-    """
-    if not os.path.isfile(os.path.join(src, "complete")):
-        sys.exit(f"{src}: missing completion marker; the replay did not finish")
-    trusted = trusted_claims(resolved)
-    old_processed = load_processed(os.path.join(root, PROCESSED_PATH))
-    if old_processed != resolved["processed"]:
+def validate_processed(src, resolved, root):
+    """Validate replay's processed-state extension against resolved claims."""
+    old = load_processed(os.path.join(root, PROCESSED_PATH))
+    if old != resolved["processed"]:
         sys.exit("processed claim state changed after resolution")
-    processed_path = os.path.join(src, "processed.json")
-    if not os.path.isfile(processed_path) or os.path.islink(processed_path):
-        sys.exit(f"{processed_path}: missing or invalid processed claim state")
-    staged_processed = load_processed(processed_path)
-    if staged_processed[: len(old_processed)] != old_processed:
+    path = os.path.join(src, "processed.json")
+    if not os.path.isfile(path) or os.path.islink(path):
+        sys.exit(f"{path}: missing or invalid processed claim state")
+    staged = load_processed(path)
+    if staged[: len(old)] != old:
         sys.exit("staged processed claim state does not extend the current state")
-    candidates = {}
-    for commit, claim in resolved["history"]:
-        entry = resolved["claims"].get(claim_key(commit, claim))
-        if entry and entry["error"] is None:
-            candidates[claim] = claim.replace(".claim.json", ".delta.jsonl.b64")
-    for entry in staged_processed[len(old_processed) :]:  # noqa: E203
+    candidates = {
+        claim: claim.replace(".claim.json", ".delta.jsonl.b64")
+        for commit, claim in resolved["history"]
+        if (entry := resolved["claims"].get(claim_key(commit, claim)))
+        and entry["error"] is None
+    }
+    for entry in staged[len(old) :]:  # noqa: E203
         if candidates.get(entry["claim"]) != entry["delta"]:
             sys.exit("staged processed state contains a claim not resolved in this run")
+    return old, staged
+
+
+def staged_ledgers(src, root):
+    """Return validated staged room ledger paths from untrusted output SRC."""
     updates = []
     for name in sorted(os.listdir(src)):
         path = os.path.join(src, name)
@@ -581,6 +585,24 @@ def publish(src, resolved, root="."):
         if not os.path.isfile(os.path.join(root, name, "targets.csv")):
             sys.exit(f"{name}: not a published bounty room here")
         updates.append((name, ledger))
+    return updates
+
+
+def publish(src, resolved, root="."):
+    """Validate the staged files in SRC and append their new rows under ROOT.
+
+    SRC came from a job that ran rezzy, so treat it as untrusted: accept only
+    `complete`, `errors.txt` and <ROOM>/ledger.jsonl regular files, for rooms
+    that exist here, and only as append-only extensions of the current ledger
+    consisting of new unpaid rows that the RESOLVED metadata and the published
+    target table back (prize, claimant, address, delta, no repeated target).
+    Returns (rooms changed, sanitized errors).
+    """
+    if not os.path.isfile(os.path.join(src, "complete")):
+        sys.exit(f"{src}: missing completion marker; the replay did not finish")
+    trusted = trusted_claims(resolved)
+    old_processed, staged_processed = validate_processed(src, resolved, root)
+    updates = staged_ledgers(src, root)
     changed = [r for r, ledger in updates if append_ledger(r, ledger, root, trusted)]
     if staged_processed != old_processed:
         temp = f"{os.path.join(root, PROCESSED_PATH)}.tmp"

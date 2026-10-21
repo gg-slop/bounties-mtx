@@ -465,6 +465,36 @@ class PublishTest(unittest.TestCase):
             claim,
         )
 
+    def test_delta_must_match_its_successfully_resolved_pr(self):
+        other_claim = claim_path(ROOM, "bb")
+        other_delta = other_claim.replace(".claim.json", ".delta.jsonl.b64")
+        other_key = rc.claim_key(commit(2), other_claim)
+        self.resolved["history"].append([commit(2), other_claim])
+        self.resolved["claims"][other_key] = {
+            "error": None,
+            "pr": {
+                "number": "2",
+                "author": "b",
+                "body": "Payout: bc1q" + "b" * 26,
+            },
+        }
+        self.stage(self.row("$1", delta=other_delta))
+        with self.assertRaises(SystemExit):
+            self.pub(self.src)
+
+        self.resolved["claims"][other_key]["error"] = "claim attribution failed"
+        self.stage(
+            self.row(
+                "$1",
+                delta=other_delta,
+                pr="2",
+                claimant="b",
+                address="bc1q" + "b" * 26,
+            )
+        )
+        with self.assertRaises(SystemExit):
+            self.pub(self.src)
+
     def test_unchanged_ledger_is_not_reported(self):
         self.current(self.row("$1"))
         self.stage(self.row("$1"))
@@ -496,6 +526,30 @@ class PublishTest(unittest.TestCase):
                 self.stage(staged)
                 with self.assertRaises(SystemExit):
                     self.pub(self.src)
+
+    def test_delta_must_belong_to_the_pr_that_merged_its_claim(self):
+        bad = claim_path(ROOM, "bb")
+        self.resolved["history"].append([commit(2), bad])
+        other = {"number": "2", "author": "a", "body": "Payout: bc1q" + "a" * 26}
+        self.resolved["claims"][rc.claim_key(commit(2), bad)] = {
+            "error": None,
+            "pr": other,
+        }
+        bb = f"{ROOM}/deltas/bb.delta.jsonl.b64"
+        for staged in (
+            self.row("$1", delta=bb),  # claim bb was merged by PR 2, not PR 1
+            self.row("$1", pr="2"),  # claim aa was merged by PR 1, not PR 2
+        ):
+            self.stage(staged)
+            with self.assertRaises(SystemExit):
+                self.pub(self.src)
+        self.resolved["claims"][rc.claim_key(commit(2), bad)] = {
+            "error": "boom",
+            "pr": None,
+        }
+        self.stage(self.row("$1", delta=bb, pr="2"))  # failed resolution
+        with self.assertRaises(SystemExit):
+            self.pub(self.src)
 
     def test_rejects_unexpected_entries(self):
         self.stage(self.row("$1"))

@@ -7,6 +7,10 @@ MAKEFLAGS += --no-print-directory
 # Format and lint
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+.PHONY: all
+all:	##H Run all main targets
+all: format lint test
+
 
 .PHONY: format
 format:	##H Format code
@@ -18,11 +22,6 @@ format:	##H Format code
 	pre-commit run --all-files
 
 
-.PHONY: test
-test:	##H Run unit tests
-	python3 -m unittest discover -s tests
-
-
 .PHONY: lint
 lint:	##H Run python lints
 	markdownlint $$(git ls-files '*.md')
@@ -30,6 +29,11 @@ lint:	##H Run python lints
 	mypy $$(git ls-files '*.py')
 	flake8 --max-line-length 88 $$(git ls-files '*.py')
 	pylint $$(git ls-files '*.py')
+
+
+.PHONY: test
+test:	##H Run unit tests
+	python3 -m unittest discover -s tests
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
