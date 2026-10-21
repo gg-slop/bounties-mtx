@@ -27,7 +27,10 @@ import sys
 import tempfile
 
 ROOM = re.compile(r"[A-Za-z0-9_-]{43}")
-CLAIM_PATH = re.compile(r"([A-Za-z0-9_-]{43})/deltas/([0-9a-f]+)\.claim\.json")
+ROOMS_DIR = "rooms"
+CLAIM_PATH = re.compile(
+    rf"{ROOMS_DIR}/([A-Za-z0-9_-]{{43}})/deltas/([0-9a-f]+)\.claim\.json"
+)
 HERE = os.path.dirname(os.path.abspath(__file__))
 TRUSTED = (("targets.csv", "target table"), ("base.lock", "base lock"))
 LEDGER_KEYS = {"target", "claimant", "address", "pr", "delta", "prize_sats", "status"}
@@ -70,6 +73,11 @@ def pr_for_commit(prs):
     return None
 
 
+def claim_room(claim):
+    """Room ID in the claim path rooms/ROOM/deltas/<digest>.claim.json."""
+    return claim.split("/")[1]
+
+
 def sibling_problem(claim, path):
     """Why CLAIM's embedded delta path/digest is unusable, or None."""
     match = CLAIM_PATH.fullmatch(path)
@@ -78,7 +86,7 @@ def sibling_problem(claim, path):
     if match is None or not (isinstance(delta, str) and isinstance(digest, str)):
         return "missing or invalid embedded delta path/digest"
     room, name = match.group(1), match.group(2)
-    if delta != f"{room}/deltas/{name}.delta.jsonl.b64" or digest != name:
+    if delta != f"{ROOMS_DIR}/{room}/deltas/{name}.delta.jsonl.b64" or digest != name:
         return "embedded delta path/digest does not match its sibling"
     return None
 
@@ -119,7 +127,12 @@ class Remote(Local):
         """Unprocessed claims on master's first-parent history, oldest first."""
         out = self._run(
             ["git", "log", "--first-parent", "--reverse", "--diff-filter=A"]
-            + ["--format=COMMIT%x09%H", "--name-only", "--", "*/deltas/*.claim.json"]
+            + [
+                "--format=COMMIT%x09%H",
+                "--name-only",
+                "--",
+                f"{ROOMS_DIR}/*/deltas/*.claim.json",
+            ]
         )
         known = {entry["claim"] for entry in processed}
         return [
@@ -129,7 +142,9 @@ class Remote(Local):
     def trusted_file(self, room, name):
         """Bytes of ROOM/NAME as of before the push, or None."""
         try:
-            return self._run(["git", "show", f"{self.before}:{room}/{name}"])
+            return self._run(
+                ["git", "show", f"{self.before}:{ROOMS_DIR}/{room}/{name}"]
+            )
         except subprocess.CalledProcessError:
             return None
 
@@ -206,7 +221,7 @@ class Resolver:
 
     def one(self, commit, claim):
         """Resolve one claim."""
-        room = claim.split("/", 1)[0]
+        room = claim_room(claim)
         key = claim_key(commit, claim)
         try:
             data = self.remote.read_claim(claim)
@@ -319,7 +334,7 @@ class Awarder:
         self.blocked = set()
         self.prior = {}
         for entry in resolved["processed"]:
-            room = entry["claim"].split("/", 1)[0]
+            room = claim_room(entry["claim"])
             self.prior.setdefault(room, []).append(entry["delta"])
         self.completed = list(resolved["processed"])
 
@@ -361,7 +376,7 @@ class Awarder:
 
     def one(self, commit, claim):
         """Process one claim."""
-        room = claim.split("/", 1)[0]
+        room = claim_room(claim)
         try:
             data = self.src.read_claim(claim)
         except (OSError, UnicodeError, ValueError):
@@ -410,8 +425,9 @@ class Awarder:
 def stage(out, errors, processed, root="."):
     """Copy room ledgers, errors, and processed claim state for publish."""
     os.makedirs(out, exist_ok=True)
-    for name in sorted(os.listdir(root)):
-        src = os.path.join(root, name, "ledger.jsonl")
+    rooms = os.path.join(root, ROOMS_DIR)
+    for name in sorted(os.listdir(rooms) if os.path.isdir(rooms) else []):
+        src = os.path.join(rooms, name, "ledger.jsonl")
         if ROOM.fullmatch(name) and os.path.isfile(src) and not os.path.islink(src):
             os.makedirs(os.path.join(out, name), exist_ok=True)
             shutil.copyfile(src, os.path.join(out, name, "ledger.jsonl"))
@@ -443,7 +459,7 @@ def read_prizes(room, path):
                 prizes[target] = prize
             return prizes
     except (OSError, KeyError, ValueError) as exc:
-        sys.exit(f"{room}/targets.csv: unreadable target table: {exc}")
+        sys.exit(f"{ROOMS_DIR}/{room}/targets.csv: unreadable target table: {exc}")
 
 
 def trusted_claims(resolved):
@@ -519,26 +535,32 @@ def check_new_rows(room, tail, old, trusted):
     TRUSTED is (prizes, prs, {delta: PR number}); OLD is the current ledger's bytes.
     """
     if tail and not tail.endswith(b"\n"):
-        sys.exit(f"{room}/ledger.jsonl: appended rows must end with a newline")
+        sys.exit(
+            f"{ROOMS_DIR}/{room}/ledger.jsonl: appended rows must end with a newline"
+        )
     seen = {json.loads(line)["target"] for line in old.splitlines()}
     for line in tail.splitlines():
         try:
             row = json.loads(line)
         except ValueError:
-            sys.exit(f"{room}/ledger.jsonl: appended row is not JSON")
+            sys.exit(f"{ROOMS_DIR}/{room}/ledger.jsonl: appended row is not JSON")
         problem = row_problem(room, row, *trusted)
-        if problem is None and not row["delta"].startswith(f"{room}/deltas/"):
+        if problem is None and not row["delta"].startswith(
+            f"{ROOMS_DIR}/{room}/deltas/"
+        ):
             problem = "delta belongs to a different room"
         if problem is None and row["target"] in seen:
             problem = "target already awarded"
         if problem:
-            sys.exit(f"{room}/ledger.jsonl: rejected appended row: {problem}")
+            sys.exit(
+                f"{ROOMS_DIR}/{room}/ledger.jsonl: rejected appended row: {problem}"
+            )
         seen.add(row["target"])
 
 
 def append_ledger(room, staged, root, claims):
     """Replace ROOM's ledger with STAGED if it validly extends it; True if changed."""
-    current = os.path.join(root, room, "ledger.jsonl")
+    current = os.path.join(root, ROOMS_DIR, room, "ledger.jsonl")
     old = b""
     if os.path.exists(current):
         with open(current, "rb") as f:
@@ -546,10 +568,13 @@ def append_ledger(room, staged, root, claims):
     with open(staged, "rb") as f:
         new = f.read()
     if not new.startswith(old):
-        sys.exit(f"{room}/ledger.jsonl: staged ledger must extend the current one")
+        sys.exit(
+            f"{ROOMS_DIR}/{room}/ledger.jsonl: "
+            "staged ledger must extend the current one"
+        )
     if new == old:
         return False
-    prizes = read_prizes(room, os.path.join(root, room, "targets.csv"))
+    prizes = read_prizes(room, os.path.join(root, ROOMS_DIR, room, "targets.csv"))
     check_new_rows(room, new[len(old) :], old, (prizes, *claims))  # noqa: E203
     temp = f"{current}.tmp"
     with open(temp, "wb") as f:
@@ -598,7 +623,7 @@ def staged_ledgers(src, root):
         valid = valid and os.path.isfile(ledger) and not os.path.islink(ledger)
         if not valid:
             sys.exit(f"{path}: unexpected entry in the staged output")
-        if not os.path.isfile(os.path.join(root, name, "targets.csv")):
+        if not os.path.isfile(os.path.join(root, ROOMS_DIR, name, "targets.csv")):
             sys.exit(f"{name}: not a published bounty room here")
         updates.append((name, ledger))
     return updates

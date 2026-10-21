@@ -15,12 +15,13 @@ all: format lint test
 
 .PHONY: format
 format:	##H Format code
+	pre-commit run --all-files
 	prettier --prose-wrap always --print-width 80 --write $$(git ls-files '*.md' '*.y*ml' '*.json')
 	black $$(git ls-files '*.py')
 	isort $$(git ls-files '*.py')
 	ruff format $$(git ls-files '*.py')
 	ruff check --fix $$(git ls-files '*.py')
-	pre-commit run --all-files
+	shfmt -w $$(git ls-files '*.sh')
 
 
 .PHONY: lint
@@ -30,6 +31,7 @@ lint:	##H Run python lints
 	mypy $$(git ls-files '*.py')
 	flake8 --max-line-length 88 $$(git ls-files '*.py')
 	pylint $$(git ls-files '*.py')
+	shellcheck $$(git ls-files '*.sh')
 
 
 .PHONY: test

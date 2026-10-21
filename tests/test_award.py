@@ -28,12 +28,12 @@ def commit(n):
 
 
 def claim_path(room, digest):
-    return f"{room}/deltas/{digest}.claim.json"
+    return f"rooms/{room}/deltas/{digest}.claim.json"
 
 
 def claim_data(room, digest):
     return {
-        "delta": f"{room}/deltas/{digest}.delta.jsonl.b64",
+        "delta": f"rooms/{room}/deltas/{digest}.delta.jsonl.b64",
         "delta_sha256_16": digest,
     }
 
@@ -171,7 +171,7 @@ class ResolveReplayTest(Flow):
         self.assertEqual(self.arg(first, "--claimant"), "user7")
         self.assertFalse([a for a in first if a.startswith("--prior-delta")])
         self.assertEqual(
-            self.arg(second, "--prior-delta"), f"{ROOM}/deltas/aa.delta.jsonl.b64"
+            self.arg(second, "--prior-delta"), f"rooms/{ROOM}/deltas/aa.delta.jsonl.b64"
         )
 
     def test_trusted_files_and_pr_body_reach_merge(self):
@@ -284,7 +284,7 @@ class ResolveReplayTest(Flow):
         doc["rooms"].update(healthy["rooms"])
         errors = self.replay(doc)
         self.assertEqual(len(errors), 2)
-        self.assertTrue(self.local.merges[0][0].startswith(OTHER))
+        self.assertTrue(self.local.merges[0][0].startswith(f"rooms/{OTHER}"))
 
     def test_resolver_skips_lookups_for_blocked_rooms(self):
         self.add(ROOM, "aa", 1)
@@ -388,10 +388,10 @@ class PublishTest(unittest.TestCase):
             self.assertTrue(rc.payout_module().valid_payout_address(address, "main"))
         self.root = os.path.join(self.tmp.name, "repo")
         self.src = os.path.join(self.tmp.name, "staged")
-        os.makedirs(os.path.join(self.root, ROOM))
+        os.makedirs(os.path.join(self.root, "rooms", ROOM))
         os.makedirs(os.path.join(self.src, ROOM))
         self.write(
-            os.path.join(self.root, ROOM, "targets.csv"),
+            os.path.join(self.root, "rooms", ROOM, "targets.csv"),
             "event_id,n_refs,min_child_depth,prize_sats\n"
             + "".join(f"${n},1,1,3\n" for n in range(1, 4)),
         )
@@ -424,7 +424,7 @@ class PublishTest(unittest.TestCase):
             "claimant": "a",
             "address": ADDR_A,
             "pr": "1",
-            "delta": f"{ROOM}/deltas/aa.delta.jsonl.b64",
+            "delta": f"rooms/{ROOM}/deltas/aa.delta.jsonl.b64",
             "prize_sats": 3,
             "status": status,
         }
@@ -438,14 +438,16 @@ class PublishTest(unittest.TestCase):
         self.write(os.path.join(self.src, ROOM, "ledger.jsonl"), text)
 
     def current(self, text):
-        self.write(os.path.join(self.root, ROOM, "ledger.jsonl"), text)
+        self.write(os.path.join(self.root, "rooms", ROOM, "ledger.jsonl"), text)
 
     def test_appends_new_rows(self):
         self.current(self.row("$1"))
         self.stage(self.row("$1") + self.row("$2"))
         changed, _ = self.pub(self.src)
         self.assertEqual(changed, [ROOM])
-        with open(os.path.join(self.root, ROOM, "ledger.jsonl"), encoding="utf-8") as f:
+        with open(
+            os.path.join(self.root, "rooms", ROOM, "ledger.jsonl"), encoding="utf-8"
+        ) as f:
             self.assertEqual(len(f.readlines()), 2)
 
     def test_creates_first_ledger(self):
@@ -524,7 +526,8 @@ class PublishTest(unittest.TestCase):
             self.row("$1") + self.row("$2", claimant="mallory"),
             self.row("$1") + self.row("$2", address="bc1qforged"),
             self.row("$1") + self.row("$2", pr="9"),
-            self.row("$1") + self.row("$2", delta=f"{ROOM}/deltas/ff.delta.jsonl.b64"),
+            self.row("$1")
+            + self.row("$2", delta=f"rooms/{ROOM}/deltas/ff.delta.jsonl.b64"),
             self.row("$1")
             + self.row("$2")
             + self.row("$2"),  # repeated within the batch
@@ -542,7 +545,7 @@ class PublishTest(unittest.TestCase):
             "error": None,
             "pr": other,
         }
-        bb = f"{ROOM}/deltas/bb.delta.jsonl.b64"
+        bb = f"rooms/{ROOM}/deltas/bb.delta.jsonl.b64"
         for staged in (
             self.row("$1", delta=bb),  # claim bb was merged by PR 2, not PR 1
             self.row("$1", pr="2"),  # claim aa was merged by PR 1, not PR 2
@@ -591,10 +594,10 @@ class PublishTest(unittest.TestCase):
 
     def test_stage_collects_ledgers_errors_and_marker(self):
         work = os.path.join(self.tmp.name, "work")
-        os.makedirs(os.path.join(work, ROOM))
-        self.write(os.path.join(work, ROOM, "ledger.jsonl"), self.row("$1"))
-        os.makedirs(os.path.join(work, "notaroom"))
-        self.write(os.path.join(work, "notaroom", "ledger.jsonl"), "x")
+        os.makedirs(os.path.join(work, "rooms", ROOM))
+        self.write(os.path.join(work, "rooms", ROOM, "ledger.jsonl"), self.row("$1"))
+        os.makedirs(os.path.join(work, "rooms", "notaroom"))
+        self.write(os.path.join(work, "rooms", "notaroom", "ledger.jsonl"), "x")
         out = os.path.join(self.tmp.name, "out")
         rc.stage(out, ["boom\nsecond"], [], root=work)
         self.assertEqual(
